@@ -47,7 +47,7 @@
 ## 项目结构
 
 ```
-AutoCLP/
+AutoCPL/
 ├── ambient/              # 多模态输入层（文件/API/音频）
 │   ├── models.py         # 数据模型：RawClinicalData, InputSource, InputModality
 │   ├── text_input.py     # 文本输入适配器：TextInputAdapter
