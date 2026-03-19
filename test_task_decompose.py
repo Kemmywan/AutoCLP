@@ -12,7 +12,7 @@ import json
 from dataclasses import fields as dataclass_fields
 
 from ambient import MultimodalAdapter
-from commander import CommanderLLM
+from commander import CommanderLLM, BranchNode, flatten_tasks
 from commander.task_schema import BaseTask, TaskType, TaskStatus
 from llm_manager import LLMManager
 from llm_manager.models import SYSTEM_MESSAGES, COMMANDER_SYSTEM_MESSAGE
@@ -148,9 +148,12 @@ async def main():
         print(f"     {preview}")
         print()
 
-    # 3. 任务分解
+    # 3. 任务分解（带分支）
     print_banner("Commander 任务分解中...")
-    tasks = await commander.decompose(raw_data)
+    items = await commander.decompose(raw_data)  # list[BaseTask | BranchNode]
+    tasks = flatten_tasks(items)  # 展平用于统计和打印
+
+    print_banner(f"病情标签: {commander.last_label}")
 
     # 4. 可视化输出
     print_summary_table(tasks)
@@ -167,7 +170,9 @@ async def main():
     for t in tasks:
         name = t.task_type.value
         type_count[name] = type_count.get(name, 0) + 1
+    branch_count = sum(1 for item in items if isinstance(item, BranchNode))
     print(f"  总Task数:  {len(tasks)}")
+    print(f"  分支节点:  {branch_count} 个")
     print(f"  类型分布:  {json.dumps(type_count, ensure_ascii=False)}")
     urgent = sum(1 for t in tasks if getattr(t, "priority", "") == "urgent")
     print(f"  紧急任务:  {urgent} 个")
@@ -176,14 +181,14 @@ async def main():
     print()
 
     generator = CPLGenerator()
-    cpl_text = generator.render(tasks, pathway_name="门诊处理路径")
+    cpl_text = generator.render(items, pathway_name="门诊处理路径")
 
     print_banner("CPL 脚本")
     print(cpl_text)
 
     # 6. CPL解释 → 执行计划
     interpreter = CPLInterpreter()
-    script = generator.generate(tasks, pathway_name="门诊处理路径")
+    script = generator.generate(items, pathway_name="门诊处理路径")
     plan = interpreter.interpret_script(script)
 
     print_banner("执行计划概览")

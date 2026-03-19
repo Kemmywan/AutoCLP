@@ -5,7 +5,8 @@ from .task_schema import (
     PrescriptionTask, DiagnosticTask, ScheduleTask,
     TreatmentExecutionTask, NotificationTask,
     ResultReviewTask, AdmissionDischargeTask,
-    RecoveryAdviceTask, ArchiveTask
+    RecoveryAdviceTask, ArchiveTask,
+    BranchNode, flatten_tasks,
 )
 
-__all__ = ["CommanderLLM"]
+__all__ = ["CommanderLLM", "BranchNode", "flatten_tasks"]

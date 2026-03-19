@@ -18,6 +18,7 @@ from commander.task_schema import (
     TreatmentExecutionTask, NotificationTask,
     ResultReviewTask, AdmissionDischargeTask,
     RecoveryAdviceTask, ArchiveTask,
+    BranchNode,
 )
 from .models import CPLNode, CPLScript
 
@@ -66,14 +67,31 @@ class CPLGenerator:
 
     # ==================== 对外接口 ====================
 
-    def generate(self, tasks: list[BaseTask], pathway_name: str | None = None) -> CPLScript:
+    def generate(self, tasks: list, pathway_name: str | None = None) -> CPLScript:
         """
         Task列表 → CPLScript结构化对象
+
+        支持两种输入：
+        - list[BaseTask]：线性Task列表（原有行为）
+        - list[BaseTask | BranchNode]：含条件分支的Task列表
 
         Args:
             tasks:          Commander.decompose()产出的Task列表
             pathway_name:   路径名称（默认自动生成）
         """
+        if not tasks:
+            return CPLScript(pathway_name=pathway_name or "空路径")
+
+        # 检测是否包含分支节点
+        has_branch = any(isinstance(item, BranchNode) for item in tasks)
+        if has_branch:
+            return self._generate_branched(tasks, pathway_name)
+
+        # 原有线性生成逻辑
+        return self._generate_linear(tasks, pathway_name)
+
+    def _generate_linear(self, tasks: list[BaseTask], pathway_name: str | None = None) -> CPLScript:
+        """原有线性Task列表 → CPLScript"""
         if not tasks:
             return CPLScript(pathway_name=pathway_name or "空路径")
 
@@ -108,10 +126,93 @@ class CPLGenerator:
             epilogue_lines=epilogue,
         )
 
-    def render(self, tasks: list[BaseTask], pathway_name: str | None = None) -> str:
+    def render(self, tasks: list, pathway_name: str | None = None) -> str:
         """Task列表 → CPL脚本字符串（一步到位）"""
         script = self.generate(tasks, pathway_name)
         return script.render()
+
+    # ==================== 带分支的生成 ====================
+
+    def _generate_branched(self, items: list, pathway_name: str | None = None) -> CPLScript:
+        """
+        含BranchNode的Task列表 → CPLScript
+        按原始顺序遍历，BaseTask生成普通STEP，BranchNode生成含IF/ELIF/ELSE的STEP
+        """
+        from commander.task_schema import flatten_tasks
+
+        flat_tasks = flatten_tasks(items)
+        asserts = self._generate_asserts(flat_tasks)
+
+        nodes = []
+        archive_tasks = []
+        step_num = 0
+
+        for item in items:
+            if isinstance(item, BranchNode):
+                step_num += 1
+                node = self._branch_to_node(item, step_num)
+                nodes.append(node)
+            elif isinstance(item, BaseTask):
+                if item.task_type == TaskType.ARCHIVE:
+                    archive_tasks.append(item)
+                    continue
+                step_num += 1
+                node = self._task_to_node(item, step_num)
+                nodes.append(node)
+
+        epilogue = self._generate_epilogue(archive_tasks)
+
+        return CPLScript(
+            pathway_name=pathway_name or self._infer_pathway_name(flat_tasks),
+            asserts=asserts,
+            nodes=nodes,
+            epilogue_lines=epilogue,
+        )
+
+    def _branch_to_node(self, branch: BranchNode, step_num: int) -> CPLNode:
+        """将BranchNode转换为含IF/ELIF/ELSE的CPLNode"""
+        body_lines = []
+
+        for i, (cond_value, branch_tasks) in enumerate(branch.branches):
+            keyword = "IF" if i == 0 else "ELIF"
+            body_lines.append(f'{keyword} {branch.condition} == "{cond_value}":')
+            for task in branch_tasks:
+                task_lines = self._get_task_body_lines(task)
+                for line in task_lines:
+                    body_lines.append(f"    {line}")
+
+        if branch.else_tasks:
+            body_lines.append("ELSE:")
+            for task in branch.else_tasks:
+                task_lines = self._get_task_body_lines(task)
+                for line in task_lines:
+                    body_lines.append(f"    {line}")
+
+        return CPLNode(
+            step_number=step_num,
+            label="条件分支处理",
+            task_id="",
+            task_type="branch",
+            body_lines=body_lines,
+            depends_on=[],
+        )
+
+    def _get_task_body_lines(self, task: BaseTask) -> list[str]:
+        """获取单个Task的CPL代码行（复用emit方法）"""
+        emitter = {
+            TaskType.PATIENT_PROFILE:       self._emit_patient_profile,
+            TaskType.EXAMINATION_ORDER:     self._emit_examination_order,
+            TaskType.PRESCRIPTION:          self._emit_prescription,
+            TaskType.DIAGNOSTIC:            self._emit_diagnostic,
+            TaskType.SCHEDULE:              self._emit_schedule,
+            TaskType.TREATMENT_EXECUTION:   self._emit_treatment_execution,
+            TaskType.NOTIFICATION:          self._emit_notification,
+            TaskType.RESULT_REVIEW:         self._emit_result_review,
+            TaskType.ADMISSION_DISCHARGE:   self._emit_admission_discharge,
+            TaskType.RECOVERY_ADVICE:       self._emit_recovery_advice,
+        }
+        emit_fn = emitter.get(task.task_type, self._emit_generic)
+        return emit_fn(task)
 
     # ==================== 拓扑排序 ====================
 

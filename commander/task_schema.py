@@ -141,4 +141,28 @@ class ArchiveTask(BaseTask):
     audit_trail: list = field(default_factory=list)  # 审计轨迹（每步transaction ID链）
 
 
+@dataclass
+class BranchNode:
+    """
+    条件分支节点：在Task列表中表示IF/ELIF/ELSE分支结构
 
+    condition:  条件变量，如 "diagnostic.primary_diagnosis"
+    branches:   [(condition_value, [BaseTask, ...]), ...]  有序的分支列表
+    else_tasks: ELSE分支中的tasks
+    """
+    condition: str = ""
+    branches: list = field(default_factory=list)   # [(str, list[BaseTask]), ...]
+    else_tasks: list = field(default_factory=list)  # list[BaseTask]
+
+
+def flatten_tasks(items: list) -> list:
+    """将包含BranchNode的混合列表展平为纯BaseTask列表"""
+    result = []
+    for item in items:
+        if isinstance(item, BranchNode):
+            for _, tasks in item.branches:
+                result.extend(tasks)
+            result.extend(item.else_tasks)
+        else:
+            result.append(item)
+    return result

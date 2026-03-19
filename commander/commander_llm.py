@@ -9,9 +9,16 @@ from .task_schema import (
     PrescriptionTask, DiagnosticTask, ScheduleTask,
     TreatmentExecutionTask, NotificationTask,
     ResultReviewTask, AdmissionDischargeTask,
-    RecoveryAdviceTask, ArchiveTask
+    RecoveryAdviceTask, ArchiveTask,
+    BranchNode, flatten_tasks,
 )
-from .prompts import TASK_DECOMPOSE_PROMPT, CPL_GENERATE_PROMPT
+from .prompts import (
+    TASK_DECOMPOSE_PROMPT, CPL_GENERATE_PROMPT,
+    LABEL_CLASSIFY_PROMPT, VALID_LABELS,
+    _PARADIGM_TEMPLATES,
+    TASK_DECOMPOSE_BRANCHED_PROMPT,
+    TASK_DECOMPOSE_FREE_BRANCHED_PROMPT,
+)
 
 
 # ==================== Task工厂：JSON → 具体Task对象 ====================
@@ -188,44 +195,129 @@ class CommanderLLM:
 
     职责：
       1. 接收 RawClinicalData
-      2. 调用LLM进行意图识别与任务分解 → Task列表
-      3. 将Task列表形式化为CPL脚本字符串
+      2. 分类病情标签（感冒/腹痛/头痛/骨折/失眠/无）
+      3. 调用LLM进行意图识别与任务分解 → 带条件分支的Task列表
+      4. 将Task列表形式化为CPL脚本字符串
     """
 
     def __init__(self, agent):
-        """
-        agent: 来自LLMManager的Commander专用LLM实例
-               建议使用能力最强的模型，它是整个pipeline的调度核心
-        """
         self.agent = agent
         self.factory = TaskFactory()
+        self.last_label: str = ""  # 最近一次分类结果
 
-    # ==================== Step 1: 任务分解 ====================
+    # ==================== Step 0: 标签分类 ====================
 
-    async def decompose(self, raw_data: RawClinicalData) -> list[BaseTask]:
+    async def classify(self, raw_data: RawClinicalData) -> str:
+        """
+        对医患对话进行病情标签分类
+        返回: "感冒"/"腹痛"/"头痛"/"骨折"/"失眠"/"无"
+        """
+        prompt = LABEL_CLASSIFY_PROMPT.format(dialogue=raw_data.content)
+        raw_response = await self._call_llm(prompt)
+        label = raw_response.strip().strip('"').strip("'")
+        # 清理可能的额外文字，只保留标签名
+        for valid in VALID_LABELS:
+            if valid in label:
+                self.last_label = valid
+                print(f"[Commander] 病情标签分类: {valid}")
+                return valid
+        self.last_label = "无"
+        print(f"[Commander] 病情标签分类: 无（原始返回: {label[:30]}）")
+        return "无"
+
+    # ==================== Step 1: 任务分解（带分支） ====================
+
+    async def decompose(self, raw_data: RawClinicalData) -> list:
         """
         输入：RawClinicalData
-        输出：Task对象列表（已实例化的具体Task子类）
+        输出：list[BaseTask | BranchNode]（含条件分支结构）
+
+        流程：
+        1. 先分类标签
+        2. 已知标签 → 按范式生成带分支的Task列表
+        3. 未知标签 → 自由生成带分支的Task列表
         """
         print(f"[Commander] 开始任务分解，输入长度：{len(raw_data.content)} 字符")
 
-        prompt = TASK_DECOMPOSE_PROMPT.format(dialogue=raw_data.content)
-        raw_response = await self._call_llm(prompt)
+        # Step 0: 分类
+        label = await self.classify(raw_data)
 
-        # 解析LLM输出的JSON
+        # Step 1: 根据标签选择prompt
+        if label in VALID_LABELS:
+            paradigm = _PARADIGM_TEMPLATES[label]
+            prompt = TASK_DECOMPOSE_BRANCHED_PROMPT.format(
+                label=label, paradigm=paradigm, dialogue=raw_data.content
+            )
+        else:
+            prompt = TASK_DECOMPOSE_FREE_BRANCHED_PROMPT.format(
+                dialogue=raw_data.content
+            )
+
+        raw_response = await self._call_llm(prompt)
         task_items = self._parse_json_response(raw_response)
 
-        # 构建 task_type → task_id 映射（用于depends_on解析）
-        depends_map = {}
-        tasks = []
-        for item in task_items:
-            task = TaskFactory.build(item, depends_map)
-            depends_map[item["task_type"]] = task.task_id
-            tasks.append(task)
-            print(f"[Commander] 生成Task: {task.task_type.value} | id={task.task_id[:8]}...")
+        # 解析带分支的JSON → list[BaseTask | BranchNode]
+        result = self._parse_branched_items(task_items)
 
-        print(f"[Commander] 任务分解完成，共 {len(tasks)} 个Task")
-        return tasks
+        flat = flatten_tasks(result)
+        print(f"[Commander] 任务分解完成，标签={label}，"
+              f"顶层元素={len(result)}，展平Task数={len(flat)}")
+        return result
+
+    # ==================== 分支JSON解析 ====================
+
+    def _parse_branched_items(self, task_items: list[dict]) -> list:
+        """
+        解析带分支结构的JSON数组
+        返回: list[BaseTask | BranchNode]
+        """
+        depends_map = {}
+        result = []
+
+        for item in task_items:
+            if item.get("type") == "branch":
+                branch_node = self._parse_branch_node(item, depends_map)
+                result.append(branch_node)
+            else:
+                task = TaskFactory.build(item, depends_map)
+                depends_map[item["task_type"]] = task.task_id
+                result.append(task)
+                print(f"[Commander] 生成Task: {task.task_type.value} | id={task.task_id[:8]}...")
+
+        return result
+
+    def _parse_branch_node(self, item: dict, depends_map: dict) -> BranchNode:
+        """解析单个分支节点"""
+        condition = item.get("condition", "")
+        branches = []
+        for branch in item.get("branches", []):
+            cond_value = branch.get("condition_value", "")
+            branch_tasks = []
+            for task_item in branch.get("tasks", []):
+                try:
+                    task = TaskFactory.build(task_item, depends_map)
+                    depends_map[task_item["task_type"]] = task.task_id
+                    branch_tasks.append(task)
+                except Exception as e:
+                    print(f"[Commander] 分支Task构建跳过: {e}")
+            branches.append((cond_value, branch_tasks))
+
+        else_tasks = []
+        for task_item in item.get("else_tasks", []):
+            try:
+                task = TaskFactory.build(task_item, depends_map)
+                depends_map[task_item["task_type"]] = task.task_id
+                else_tasks.append(task)
+            except Exception as e:
+                print(f"[Commander] ELSE分支Task构建跳过: {e}")
+
+        print(f"[Commander] 生成BranchNode: condition={condition}, "
+              f"分支数={len(branches)}, else_tasks={len(else_tasks)}")
+        return BranchNode(
+            condition=condition,
+            branches=branches,
+            else_tasks=else_tasks,
+        )
 
     # ==================== Step 2: CPL生成 ====================
 
@@ -253,15 +345,16 @@ class CommanderLLM:
 
     # ==================== Step 1+2 一体化入口 ====================
 
-    async def process(self, raw_data: RawClinicalData) -> tuple[list[BaseTask], str]:
+    async def process(self, raw_data: RawClinicalData) -> tuple[list, str]:
         """
         一体化入口：
         RawClinicalData → Task列表 + CPL脚本
-        返回 (tasks, cpl_script) 供下游CPL Interpreter消费
+        返回 (items, cpl_script) 供下游CPL Interpreter消费
         """
-        tasks = await self.decompose(raw_data)
-        cpl_script = await self.generate_cpl(tasks)
-        return tasks, cpl_script
+        items = await self.decompose(raw_data)
+        flat = flatten_tasks(items)
+        cpl_script = await self.generate_cpl(flat)
+        return items, cpl_script
 
     # ==================== 内部工具方法 ====================
 
