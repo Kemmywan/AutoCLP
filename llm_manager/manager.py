@@ -92,6 +92,7 @@ class LLMManager:
             # 默认使用standard模型
             TaskType.PATIENT_PROFILE:       self._default_agent_model,
             TaskType.EXAMINATION_ORDER:     self._default_agent_model,
+            TaskType.EXAM_EXECUTION:        self._default_agent_model,
             TaskType.PRESCRIPTION:          self._default_agent_model,
             TaskType.SCHEDULE:              self._default_agent_model,
             TaskType.TREATMENT_EXECUTION:   self._default_agent_model,

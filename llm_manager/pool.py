@@ -1,4 +1,5 @@
 # llm_manager/pool.py
+import re
 import uuid
 import json
 from datetime import datetime
@@ -141,19 +142,11 @@ class LLMPool:
 
     async def execute_plan(self, plan, context: dict | None = None) -> "ExecutionReport":
         """
-        接收CPL Interpreter产出的ExecutionPlan，按顺序调度Agent调用
-
-        Args:
-            plan:     cpl.interpreter.ExecutionPlan 对象
-            context:  执行上下文（如原始dialogue），可被Agent引用
-
-        Returns:
-            ExecutionReport 包含每步执行结果与审计轨迹
+        接收CPL Interpreter产出的ExecutionPlan，按顺序调度执行。
+        支持AgentCall和ConditionalBlock（IF/ELIF/ELSE条件分支）。
         """
-        from cpl.interpreter import AgentCall, CallType
-
         report = ExecutionReport(pathway_name=plan.pathway_name)
-        variables: dict[str, str] = {}   # CPL变量空间：var_name → result
+        variables: dict[str, str] = {}
         if context:
             variables.update(context)
 
@@ -167,124 +160,351 @@ class LLMPool:
                 detail=a.error_message,
             ))
 
-        # 2. 按顺序执行Agent调用
-        calls = plan.calls
-        for call in calls:
-            txn_id = str(uuid.uuid4())
-            call.transaction_id = txn_id
-            call.status = "running"
-            call.started_at = datetime.now().isoformat()
-
-            entry = AuditEntry(
-                transaction_id=txn_id,
-                step_number=call.step_number,
-                step_label=call.step_label,
-                action=f"EXECUTE {call.agent_name}",
-                call_type=call.call_type.value,
-                task_type=call.task_type.value if call.task_type else "",
-                params=call.params,
-                status="running",
-            )
-
-            # 只对agent类型调用执行LLM
-            if call.call_type == CallType.AGENT and call.task_type is not None:
-                try:
-                    result = await self._execute_agent_call(call, variables)
-                    call.status = "done"
-                    call.result = result
-                    call.finished_at = datetime.now().isoformat()
-                    entry.status = "done"
-                    entry.result_preview = result[:200] if result else ""
-
-                    # 存入变量空间
-                    if call.variable_name:
-                        variables[call.variable_name] = result
-
-                except Exception as e:
-                    call.status = "failed"
-                    call.error = str(e)
-                    call.finished_at = datetime.now().isoformat()
-                    entry.status = "failed"
-                    entry.error = str(e)
-                    print(f"[Executor] STEP {call.step_number} 执行失败: {e}")
-
-            elif call.call_type == CallType.PROTOCOL:
-                call.status = "done"
-                call.result = f"[Protocol] {call.agent_name} 已记录（协议类操作，无LLM调用）"
-                call.finished_at = datetime.now().isoformat()
-                entry.status = "done"
-                entry.result_preview = call.result
-
-            elif call.call_type == CallType.RAG:
-                try:
-                    record_text = variables.get("medical_record", variables.get("patient_profile", ""))
-                    diag_text = variables.get("diagnostic", "")
-                    if record_text and diag_text:
-                        self.rag.add_pair(record=record_text, diagnostic=diag_text)
-                        self.rag.save_index()
-                        call.result = (
-                            f"[RAG] 已归档 1 条二元组 | "
-                            f"当前库容量: {len(self.rag)} 条"
-                        )
-                    else:
-                        call.result = (
-                            f"[RAG] 跳过归档: record={'有' if record_text else '无'}, "
-                            f"diagnostic={'有' if diag_text else '无'}"
-                        )
-                    call.status = "done"
-                except Exception as e:
-                    call.status = "failed"
-                    call.result = f"[RAG] 归档失败: {e}"
-                    entry.error = str(e)
-                call.finished_at = datetime.now().isoformat()
-                entry.status = call.status
-                entry.result_preview = call.result
-
-            elif call.call_type == CallType.EXAM:
-                call.status = "done"
-                call.result = f"[Exam] {call.agent_name} 检查请求已记录"
-                call.finished_at = datetime.now().isoformat()
-                entry.status = "done"
-                entry.result_preview = call.result
-
-            else:
-                call.status = "skipped"
-                call.finished_at = datetime.now().isoformat()
-                entry.status = "skipped"
-
-            entry.finished_at = call.finished_at
-            report.audit_entries.append(entry)
-            report.call_results.append(CallResult(
-                call_id=call.call_id,
-                transaction_id=txn_id,
-                step_number=call.step_number,
-                step_label=call.step_label,
-                agent_name=call.agent_name,
-                task_type=call.task_type.value if call.task_type else "",
-                status=call.status,
-                result=call.result,
-                error=call.error,
-                started_at=call.started_at,
-                finished_at=call.finished_at,
-            ))
-
-            self._audit_log.append(entry.to_dict())
-
-            # 打印执行状态
-            status_icon = {"done": "✅", "failed": "❌", "skipped": "⏭️"}.get(call.status, "❓")
-            print(
-                f"[Executor] {status_icon} STEP {call.step_number} "
-                f"{call.agent_name} | txn={txn_id[:8]}... | {call.status}"
-            )
+        # 2. 递归执行所有执行项
+        await self._execute_items(plan.calls, variables, report)
 
         # 3. 汇总
         report.variables = variables
         report.finalize()
 
-        # 4. 审计日志持久化到 memory/logs/
+        # 4. 审计日志持久化
         self._save_audit_log(report.pathway_name)
-
         return report
+
+    async def _execute_items(self, items: list, variables: dict, report: "ExecutionReport"):
+        """递归执行执行项列表（AgentCall / ConditionalBlock）"""
+        from cpl.interpreter import AgentCall, ConditionalBlock, CallType
+
+        for item in items:
+            if isinstance(item, AgentCall):
+                await self._execute_single_call(item, variables, report)
+            elif isinstance(item, ConditionalBlock):
+                await self._execute_conditional(item, variables, report)
+
+    async def _execute_single_call(self, call, variables: dict, report: "ExecutionReport"):
+        """执行单个AgentCall，更新变量空间和报告"""
+        from cpl.interpreter import CallType
+
+        txn_id = str(uuid.uuid4())
+        call.transaction_id = txn_id
+        call.status = "running"
+        call.started_at = datetime.now().isoformat()
+
+        entry = AuditEntry(
+            transaction_id=txn_id,
+            step_number=call.step_number,
+            step_label=call.step_label,
+            action=f"EXECUTE {call.agent_name}",
+            call_type=call.call_type.value,
+            task_type=call.task_type.value if call.task_type else "",
+            params=call.params,
+            status="running",
+        )
+
+        if call.call_type == CallType.AGENT and call.task_type is not None:
+            try:
+                result = await self._execute_agent_call(call, variables)
+                call.status = "done"
+                call.result = result
+                call.finished_at = datetime.now().isoformat()
+                entry.status = "done"
+                entry.result_preview = result[:200] if result else ""
+                if call.variable_name:
+                    variables[call.variable_name] = result
+            except Exception as e:
+                call.status = "failed"
+                call.error = str(e)
+                call.finished_at = datetime.now().isoformat()
+                entry.status = "failed"
+                entry.error = str(e)
+                print(f"[Executor] STEP {call.step_number} 执行失败: {e}")
+
+        elif call.call_type == CallType.RAG:
+            try:
+                record_text = variables.get("medical_record", variables.get("patient_profile", ""))
+                diag_text = variables.get("diagnostic", "")
+                if record_text and diag_text:
+                    self.rag.add_pair(record=record_text, diagnostic=diag_text)
+                    self.rag.save_index()
+                    call.result = (
+                        f"[RAG] 已归档 1 条二元组 | "
+                        f"当前库容量: {len(self.rag)} 条"
+                    )
+                else:
+                    call.result = (
+                        f"[RAG] 跳过归档: record={'有' if record_text else '无'}, "
+                        f"diagnostic={'有' if diag_text else '无'}"
+                    )
+                call.status = "done"
+            except Exception as e:
+                call.status = "failed"
+                call.result = f"[RAG] 归档失败: {e}"
+                entry.error = str(e)
+            call.finished_at = datetime.now().isoformat()
+            entry.status = call.status
+            entry.result_preview = call.result
+
+        elif call.call_type == CallType.EXAM:
+            call.status = "done"
+            call.result = f"[Exam] {call.agent_name} 检查请求已记录"
+            call.finished_at = datetime.now().isoformat()
+            entry.status = "done"
+            entry.result_preview = call.result
+
+        else:
+            call.status = "skipped"
+            call.finished_at = datetime.now().isoformat()
+            entry.status = "skipped"
+
+        entry.finished_at = call.finished_at
+        report.audit_entries.append(entry)
+        report.call_results.append(CallResult(
+            call_id=call.call_id,
+            transaction_id=txn_id,
+            step_number=call.step_number,
+            step_label=call.step_label,
+            agent_name=call.agent_name,
+            task_type=call.task_type.value if call.task_type else "",
+            status=call.status,
+            result=call.result,
+            error=call.error,
+            started_at=call.started_at,
+            finished_at=call.finished_at,
+        ))
+        self._audit_log.append(entry.to_dict())
+
+        status_icon = {"done": "✅", "failed": "❌", "skipped": "⏭️"}.get(call.status, "❓")
+        print(
+            f"[Executor] {status_icon} STEP {call.step_number} "
+            f"{call.agent_name} | txn={txn_id[:8]}... | {call.status}"
+        )
+
+    async def _execute_conditional(self, block, variables: dict, report: "ExecutionReport"):
+        """
+        执行ConditionalBlock：求值条件，选择匹配的分支执行。
+        若无分支匹配且有else_items，执行ELSE分支。
+        """
+        from cpl.interpreter import ConditionalBlock
+
+        # 审计记录
+        txn_id = str(uuid.uuid4())
+        report.audit_entries.append(AuditEntry(
+            transaction_id=txn_id,
+            step_number=block.step_number,
+            step_label=block.step_label,
+            action=f"CONDITIONAL BLOCK ({len(block.branches)} branches)",
+            status="running",
+        ))
+
+        matched = False
+        for condition_expr, branch_items in block.branches:
+            result = self._evaluate_condition(condition_expr, variables)
+            branch_label = "IF" if not matched and block.branches[0][0] == condition_expr else "ELIF"
+            print(
+                f"[Executor] 🔀 STEP {block.step_number} "
+                f"{branch_label} {condition_expr} → {result}"
+            )
+            if result:
+                matched = True
+                await self._execute_items(branch_items, variables, report)
+                break
+
+        if not matched and block.else_items:
+            print(f"[Executor] 🔀 STEP {block.step_number} ELSE branch selected")
+            await self._execute_items(block.else_items, variables, report)
+        elif not matched:
+            print(f"[Executor] 🔀 STEP {block.step_number} No branch matched, skipping")
+
+        report.audit_entries.append(AuditEntry(
+            transaction_id=txn_id,
+            step_number=block.step_number,
+            step_label=block.step_label,
+            action=f"CONDITIONAL BLOCK completed (matched={matched})",
+            status="done",
+            finished_at=datetime.now().isoformat(),
+        ))
+
+    # ==================== 条件求值引擎 ====================
+
+    def _evaluate_condition(self, expr: str, variables: dict) -> bool:
+        """
+        求值一个条件表达式，如：
+          diagnostic.primary_diagnosis == "颅内疾病"
+          exam_data.abnormal == True
+          exam_data.wbc_level > 10000
+        支持运算符: ==, !=, >, <, >=, <=, in, contains
+        """
+        # 尝试匹配: lhs OP rhs
+        m = re.match(
+            r'(.+?)\s+(==|!=|>=|<=|>|<|in|contains)\s+(.+)',
+            expr.strip()
+        )
+        if not m:
+            # 单值布尔判断：如 exam_data.abnormal
+            val = self._resolve_var_path(expr.strip(), variables)
+            return bool(val)
+
+        lhs_expr = m.group(1).strip()
+        op = m.group(2).strip()
+        rhs_expr = m.group(3).strip()
+
+        lhs_val = self._resolve_var_path(lhs_expr, variables)
+        rhs_val = self._parse_literal(rhs_expr)
+
+        return self._compare(lhs_val, op, rhs_val)
+
+    def _resolve_var_path(self, path: str, variables: dict):
+        """
+        解析变量路径，如 diagnostic.primary_diagnosis
+        1. 先按 '.' 拆分
+        2. 第一段作为变量名从variables中取值
+        3. 尝试JSON解析，后续段作为字段名逐层下钻
+        4. 支持模糊匹配（英文字段名 → 中文JSON key）
+        """
+        parts = path.split(".")
+        var_name = parts[0]
+
+        # 从变量空间取值
+        raw = variables.get(var_name)
+        if raw is None:
+            return None
+
+        if len(parts) == 1:
+            return raw
+
+        # 尝试JSON解析
+        obj = raw
+        if isinstance(raw, str):
+            try:
+                obj = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return raw
+
+        # 逐层下钻
+        for field_name in parts[1:]:
+            if isinstance(obj, dict):
+                # 精确匹配
+                if field_name in obj:
+                    obj = obj[field_name]
+                else:
+                    # 模糊匹配
+                    matched_key = self._fuzzy_field_match(field_name, obj)
+                    if matched_key:
+                        obj = obj[matched_key]
+                    else:
+                        return None
+            elif isinstance(obj, list) and field_name.isdigit():
+                idx = int(field_name)
+                if 0 <= idx < len(obj):
+                    obj = obj[idx]
+                else:
+                    return None
+            else:
+                return None
+
+        return obj
+
+    @staticmethod
+    def _fuzzy_field_match(english_name: str, obj: dict) -> str | None:
+        """
+        将英文字段名模糊匹配到中文JSON key。
+        LLM生成的JSON通常使用中文key，但CPL条件用英文。
+
+        映射表覆盖常见的医疗领域字段：
+          primary_diagnosis → 病状诊断 / 初步诊断 / 诊断
+          abnormal → 是否异常 / 异常
+          wbc_level → 白细胞计数 / WBC
+          result → 结果
+        """
+        field_map = {
+            "primary_diagnosis": ["病状诊断", "初步诊断", "诊断", "主要诊断"],
+            "diagnosis": ["病状诊断", "初步诊断", "诊断", "主要诊断"],
+            "abnormal": ["是否异常", "异常"],
+            "wbc_level": ["白细胞计数", "白细胞", "WBC", "wbc"],
+            "result": ["结果", "检查结果", "检验结果"],
+            "severity": ["严重程度", "严重性"],
+            "treatment": ["治疗方案", "治疗"],
+            "medication": ["用药", "药物", "处方"],
+            "exam_items": ["检查项目"],
+            "status": ["状态"],
+        }
+
+        candidates = field_map.get(english_name.lower(), [])
+        for candidate in candidates:
+            if candidate in obj:
+                return candidate
+
+        # 最后尝试子串匹配
+        lower_name = english_name.lower().replace("_", "")
+        for key in obj:
+            if lower_name in key.lower().replace("_", ""):
+                return key
+
+        return None
+
+    @staticmethod
+    def _parse_literal(expr: str):
+        """解析右侧字面量值"""
+        expr = expr.strip()
+        if expr in ("True", "true"):
+            return True
+        if expr in ("False", "false"):
+            return False
+        if expr in ("None", "null"):
+            return None
+        # 带引号的字符串
+        if (expr.startswith('"') and expr.endswith('"')) or \
+           (expr.startswith("'") and expr.endswith("'")):
+            return expr[1:-1]
+        # 数字
+        try:
+            if "." in expr:
+                return float(expr)
+            return int(expr)
+        except ValueError:
+            pass
+        return expr
+
+    @staticmethod
+    def _compare(lhs, op: str, rhs) -> bool:
+        """安全比较，支持类型容错"""
+        # None处理
+        if lhs is None:
+            return op == "==" and rhs is None
+        if rhs is None:
+            return op == "!=" and lhs is not None
+
+        # 字符串化比较（处理类型不一致）
+        lhs_str = str(lhs).strip()
+        rhs_str = str(rhs).strip()
+
+        if op == "==":
+            # 先尝试精确比较
+            if lhs == rhs:
+                return True
+            # 字符串化比较
+            return lhs_str == rhs_str
+        if op == "!=":
+            return lhs_str != rhs_str
+        if op in ("in", "contains"):
+            return rhs_str in lhs_str or lhs_str in rhs_str
+
+        # 数值比较
+        try:
+            lhs_num = float(lhs_str)
+            rhs_num = float(rhs_str)
+            if op == ">":
+                return lhs_num > rhs_num
+            if op == "<":
+                return lhs_num < rhs_num
+            if op == ">=":
+                return lhs_num >= rhs_num
+            if op == "<=":
+                return lhs_num <= rhs_num
+        except (ValueError, TypeError):
+            pass
+
+        return False
 
     def _save_audit_log(self, pathway_name: str = ""):
         """将本次执行的审计日志写入 memory/logs/ 目录"""

@@ -11,6 +11,7 @@ class TaskType(Enum):
     DIAGNOSTIC            = "diagnostic"
     SCHEDULE              = "schedule"
     TREATMENT_EXECUTION   = "treatment_execution"
+    EXAM_EXECUTION        = "exam_execution"
     NOTIFICATION          = "notification"
     RESULT_REVIEW         = "result_review"
     ADMISSION_DISCHARGE   = "admission_discharge"
@@ -63,6 +64,12 @@ class ExaminationOrderTask(BaseTask):
     target_department: str = ""  # 目标科室，如"检验科"/"影像科"
 
 @dataclass
+class ExamExecutionTask(BaseTask):
+    task_type = TaskType.EXAM_EXECUTION
+    exam_items: list = field(default_factory=list)  # ["血常规", "X光"] — 与ExaminationOrderTask一致
+    data_mode: str = "auto_generate"  # auto_generate / manual
+
+@dataclass
 class PrescriptionTask(BaseTask):
     task_type = TaskType.PRESCRIPTION
     medications: list = field(default_factory=list)  # [{"name":"阿莫西林","dose":"0.5g","freq":"TID","duration":"7天"}]
@@ -91,7 +98,7 @@ class ScheduleTask(BaseTask):
 class TreatmentExecutionTask(BaseTask):
     task_type = TaskType.TREATMENT_EXECUTION
     treatment_type: str = ""    # "手术" / "输液" / "换药" / "物理治疗"
-    protocol_ref: str = ""      # 引用的标准协议名，如"protocol.potassium_supplement"
+
     executor_role: str = ""     # "主治医生" / "护士" / "技师"
     preconditions: list = field(default_factory=list)  # 执行前提条件，如["患者已签知情同意","血压稳定"]
     monitoring_plan: str = ""   # 执行中监测计划
@@ -156,13 +163,13 @@ class BranchNode:
 
 
 def flatten_tasks(items: list) -> list:
-    """将包含BranchNode的混合列表展平为纯BaseTask列表"""
+    """将包含BranchNode的混合列表展平为纯BaseTask列表（递归）"""
     result = []
     for item in items:
         if isinstance(item, BranchNode):
             for _, tasks in item.branches:
-                result.extend(tasks)
-            result.extend(item.else_tasks)
+                result.extend(flatten_tasks(tasks))
+            result.extend(flatten_tasks(item.else_tasks))
         else:
             result.append(item)
     return result

@@ -13,7 +13,7 @@ from collections import defaultdict
 
 from commander.task_schema import (
     BaseTask, TaskType, TaskStatus,
-    PatientProfileTask, ExaminationOrderTask,
+    PatientProfileTask, ExaminationOrderTask, ExamExecutionTask,
     PrescriptionTask, DiagnosticTask, ScheduleTask,
     TreatmentExecutionTask, NotificationTask,
     ResultReviewTask, AdmissionDischargeTask,
@@ -28,6 +28,7 @@ from .models import CPLNode, CPLScript
 _VARIABLE_NAMES = {
     TaskType.PATIENT_PROFILE:       "medical_record",
     TaskType.EXAMINATION_ORDER:     "exam_order",
+    TaskType.EXAM_EXECUTION:         "exam_data",
     TaskType.PRESCRIPTION:          "prescription",
     TaskType.DIAGNOSTIC:            "diagnostic",
     TaskType.SCHEDULE:              "schedule",
@@ -44,6 +45,7 @@ _VARIABLE_NAMES = {
 _STEP_LABELS = {
     TaskType.PATIENT_PROFILE:       "生成病历",
     TaskType.EXAMINATION_ORDER:     "检查申请",
+    TaskType.EXAM_EXECUTION:         "检查执行",
     TaskType.PRESCRIPTION:          "开具处方",
     TaskType.DIAGNOSTIC:            "AI诊断",
     TaskType.SCHEDULE:              "诊疗计划",
@@ -170,23 +172,70 @@ class CPLGenerator:
         )
 
     def _branch_to_node(self, branch: BranchNode, step_num: int) -> CPLNode:
-        """将BranchNode转换为含IF/ELIF/ELSE的CPLNode"""
+        """将BranchNode转换为含IF/ELIF/ELSE的CPLNode（支持嵌套分支）"""
         body_lines = []
 
         for i, (cond_value, branch_tasks) in enumerate(branch.branches):
             keyword = "IF" if i == 0 else "ELIF"
             body_lines.append(f'{keyword} {branch.condition} == "{cond_value}":')
             for task in branch_tasks:
-                task_lines = self._get_task_body_lines(task)
-                for line in task_lines:
-                    body_lines.append(f"    {line}")
+                if isinstance(task, BranchNode):
+                    nested_lines = self._render_nested_branch(task, indent=4)
+                    body_lines.extend(nested_lines)
+                else:
+                    task_lines = self._get_task_body_lines(task)
+                    for line in task_lines:
+                        body_lines.append(f"    {line}")
 
         if branch.else_tasks:
             body_lines.append("ELSE:")
             for task in branch.else_tasks:
-                task_lines = self._get_task_body_lines(task)
-                for line in task_lines:
-                    body_lines.append(f"    {line}")
+                if isinstance(task, BranchNode):
+                    nested_lines = self._render_nested_branch(task, indent=4)
+                    body_lines.extend(nested_lines)
+                else:
+                    task_lines = self._get_task_body_lines(task)
+                    for line in task_lines:
+                        body_lines.append(f"    {line}")
+
+        return CPLNode(
+            step_number=step_num,
+            label="条件分支处理",
+            task_id="",
+            task_type="branch",
+            body_lines=body_lines,
+            depends_on=[],
+        )
+
+    def _render_nested_branch(self, branch: BranchNode, indent: int) -> list[str]:
+        """递归渲染嵌套BranchNode为缩进的CPL行"""
+        prefix = " " * indent
+        lines = []
+
+        for i, (cond_value, branch_tasks) in enumerate(branch.branches):
+            keyword = "IF" if i == 0 else "ELIF"
+            lines.append(f'{prefix}{keyword} {branch.condition} == "{cond_value}":')
+            for task in branch_tasks:
+                if isinstance(task, BranchNode):
+                    nested = self._render_nested_branch(task, indent + 4)
+                    lines.extend(nested)
+                else:
+                    task_lines = self._get_task_body_lines(task)
+                    for line in task_lines:
+                        lines.append(f"{prefix}    {line}")
+
+        if branch.else_tasks:
+            lines.append(f"{prefix}ELSE:")
+            for task in branch.else_tasks:
+                if isinstance(task, BranchNode):
+                    nested = self._render_nested_branch(task, indent + 4)
+                    lines.extend(nested)
+                else:
+                    task_lines = self._get_task_body_lines(task)
+                    for line in task_lines:
+                        lines.append(f"{prefix}    {line}")
+
+        return lines
 
         return CPLNode(
             step_number=step_num,
@@ -202,6 +251,7 @@ class CPLGenerator:
         emitter = {
             TaskType.PATIENT_PROFILE:       self._emit_patient_profile,
             TaskType.EXAMINATION_ORDER:     self._emit_examination_order,
+            TaskType.EXAM_EXECUTION:        self._emit_exam_execution,
             TaskType.PRESCRIPTION:          self._emit_prescription,
             TaskType.DIAGNOSTIC:            self._emit_diagnostic,
             TaskType.SCHEDULE:              self._emit_schedule,
@@ -277,6 +327,7 @@ class CPLGenerator:
         emitter = {
             TaskType.PATIENT_PROFILE:       self._emit_patient_profile,
             TaskType.EXAMINATION_ORDER:     self._emit_examination_order,
+            TaskType.EXAM_EXECUTION:        self._emit_exam_execution,
             TaskType.PRESCRIPTION:          self._emit_prescription,
             TaskType.DIAGNOSTIC:            self._emit_diagnostic,
             TaskType.SCHEDULE:              self._emit_schedule,
@@ -337,6 +388,17 @@ class CPLGenerator:
             lines.append(f'LOG "检查申请完成" LEVEL INFO')
         return lines
 
+    def _emit_exam_execution(self, task: ExamExecutionTask) -> list[str]:
+        lines = []
+        items = getattr(task, 'exam_items', []) or []
+        items_str = json.dumps(items, ensure_ascii=False)
+        lines.append(f"exam_data = EXECUTE agent.exam_execution(")
+        lines.append(f"    exam_items={items_str},")
+        lines.append(f'    data_mode="auto_generate"')
+        lines.append(f")")
+        lines.append(f'LOG "检查数据已自动生成" LEVEL INFO')
+        return lines
+
     def _emit_prescription(self, task: PrescriptionTask) -> list[str]:
         lines = []
         meds = getattr(task, 'medications', []) or []
@@ -395,7 +457,6 @@ class CPLGenerator:
     def _emit_treatment_execution(self, task: TreatmentExecutionTask) -> list[str]:
         lines = []
         ttype = getattr(task, 'treatment_type', '')
-        protocol = getattr(task, 'protocol_ref', '')
         executor = getattr(task, 'executor_role', '主治医生')
         preconditions = getattr(task, 'preconditions', []) or []
         monitoring = getattr(task, 'monitoring_plan', '')
@@ -403,18 +464,15 @@ class CPLGenerator:
         for cond in preconditions:
             lines.append(f'ASSERT {_sanitize_condition(cond)}, "{cond}"')
 
-        if protocol:
-            lines.append(f"EXECUTE protocol.{protocol}")
-        else:
-            lines.append(f'treatment = EXECUTE agent.treatment_execution(')
-            lines.append(f'    treatment_type="{ttype}",')
-            lines.append(f'    executor_role="{executor}"')
-            lines.append(f")")
+        lines.append(f'treatment = EXECUTE agent.treatment_execution(')
+        lines.append(f'    treatment_type="{ttype}",')
+        lines.append(f'    executor_role="{executor}"')
+        lines.append(f")")
 
         if monitoring:
             lines.append(f'# 监测计划: {monitoring}')
 
-        lines.append(f'LOG "治疗执行: {ttype or protocol}" LEVEL INFO')
+        lines.append(f'LOG "治疗执行: {ttype}" LEVEL INFO')
         return lines
 
     def _emit_notification(self, task: NotificationTask) -> list[str]:

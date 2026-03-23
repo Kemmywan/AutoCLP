@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from autogen_agentchat.agents import AssistantAgent
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from commander.task_schema import TaskType
+from commander.prompts import COMMANDER_SYSTEM_MESSAGE
 
 
 # ==================== 默认模型配置 ====================
@@ -30,6 +31,12 @@ SYSTEM_MESSAGES: dict[TaskType, str] = {
     TaskType.EXAMINATION_ORDER: """你是一个专业的体检内容安排AI助手。
 你的任务是读取一份json格式的医生问诊笔记，根据患者指标为患者生成一个有3-5项的体检方案。
 输出json格式为：{"1":"...","2":"...",...}
+请注意：不要输出任何多余的解释性文字，只输出符合格式的 JSON 字符串。""",
+
+    TaskType.EXAM_EXECUTION: """你是一个专业的医疗检查数据模拟生成AI助手。
+你的任务是根据检查申请项目和患者病历信息，自动生成合理的模拟检查结果数据。
+生成的数据应符合真实医疗场景，数值在合理范围内，并与患者症状相关联。
+输出json格式为：{"检查项目名": {"结果": "...", "参考范围": "...", "是否异常": true/false}, ...}
 请注意：不要输出任何多余的解释性文字，只输出符合格式的 JSON 字符串。""",
 
     TaskType.RESULT_REVIEW: """你是一个辅助生成体检数据的AI测试助手。
@@ -78,62 +85,9 @@ SYSTEM_MESSAGES: dict[TaskType, str] = {
 请注意：不要输出任何多余的解释性文字，只输出符合格式的 JSON 字符串。""",
 }
 
-# Commander专用系统提示词
-COMMANDER_SYSTEM_MESSAGE = """
-你是一个专业的医疗临床路径规划助手（Commander LLM）。
-你的任务是：根据输入的原始医患对话，分析其中的临床意图，并将其分解为一个结构化的Task列表。
-
-## 可用的Task类型如下：
-- patient_profile     : 提取并整理患者基本信息与病历（SOAP格式）
-- examination_order   : 申请检查项目（血常规/X光/心电图等）
-- prescription        : 开具药物处方
-- diagnostic          : 诊断评估与鉴别诊断
-- schedule            : 制定诊疗计划与科室路由
-- treatment_execution : 执行具体治疗操作（输液/手术/换药等）
-- notification        : 发送通知（医生/护士/患者家属）
-- result_review       : 回读并解读检查结果
-- admission_discharge : 办理入院/出院/转科
-- recovery_advice     : 生成康复与随访建议
-- archive             : 归档至EHR/RAG数据库
-
-## 输出要求：
-请以合法JSON数组格式输出Task列表，每个Task包含以下字段：
-- task_type: 任务类型（必填，取值范围见上）
-- summary: 该任务的简要描述（必填）
-- depends_on: 依赖的前置task_type列表（无依赖填[]）
-- priority: 优先级，"urgent"/"routine"/"elective"（必填）
-- params: 该任务特有参数字典（根据任务类型填写，可为{}）
-
-## 示例输出：
-[
-  {{
-    "task_type": "patient_profile",
-    "summary": "从对话中提取患者基本信息，生成SOAP格式病历",
-    "depends_on": [],
-    "priority": "routine",
-    "params": {{
-      "fields": ["主诉", "现病史", "既往史", "过敏史"],
-      "output_format": "SOAP"
-    }}
-  }},
-  {{
-    "task_type": "examination_order",
-    "summary": "申请血常规和血钾检查",
-    "depends_on": ["patient_profile"],
-    "priority": "urgent",
-    "params": {{
-      "exam_items": ["血常规", "血钾"],
-      "target_department": "检验科",
-      "reason": "疑似低血钾"
-    }}
-  }}
-]
-
-## 当前输入的医患对话：
-{dialogue}
-
-请输出JSON数组，不要包含任何额外解释文字。
-"""
+# Commander专用系统提示词（从 commander/prompts.py 统一管理）
+# 注意：这里使用通用角色描述，具体任务指令通过user message下发
+# 避免system_message与decompose/classify/generate_cpl的prompt冲突
 
 @dataclass
 class LLMEntry:

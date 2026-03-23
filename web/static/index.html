@@ -1,0 +1,2098 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoCPL - 临床路径自动化</title>
+<style>
+/* ==================== Base ==================== */
+:root {
+  --bg: #0a0e17;
+  --bg2: #111827;
+  --bg3: #1a2235;
+  --border: #2a3650;
+  --accent: #00d4ff;
+  --accent2: #00ff9d;
+  --accent3: #a78bfa;
+  --warn: #fbbf24;
+  --err: #f87171;
+  --text: #e2e8f0;
+  --text2: #94a3b8;
+  --mono: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --radius: 8px;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-y: auto;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ==================== Layout ==================== */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+header {
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+}
+header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  background: linear-gradient(135deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  letter-spacing: 1px;
+}
+.pipeline-indicator {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--border);
+  transition: all 0.3s;
+}
+.dot.active { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.dot.done { background: var(--accent2); }
+.dot.error { background: var(--err); }
+
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-auto-rows: auto;
+  gap: 12px;
+  padding: 12px;
+  overflow: visible;
+}
+
+/* ==================== Panels ==================== */
+.panel {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 70vh;
+  min-height: 500px;
+}
+.panel-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text2);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  gap: 8px;
+}
+.panel-header .badge {
+  font-size: 11px;
+  background: var(--accent);
+  color: var(--bg);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+.panel-body {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+/* ==================== Panel 1: Input ==================== */
+#input-panel { grid-row: 1; grid-column: 1; }
+.input-area {
+  width: 100%;
+  height: calc(100% - 50px);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 12px;
+  resize: none;
+  outline: none;
+  transition: border-color 0.3s;
+}
+.input-area:focus {
+  border-color: var(--accent);
+}
+.btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.btn {
+  padding: 8px 20px;
+  border-radius: 6px;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-family: var(--sans);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent), #0090ff);
+  color: #000;
+}
+.btn-primary:hover:not(:disabled) {
+  box-shadow: 0 0 16px rgba(0,212,255,0.4);
+}
+.btn-next {
+  background: linear-gradient(135deg, var(--accent2), #00cc7d);
+  color: #000;
+}
+.btn-next:hover:not(:disabled) {
+  box-shadow: 0 0 16px rgba(0,255,157,0.4);
+}
+.btn-danger {
+  background: var(--err);
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) {
+  box-shadow: 0 0 16px rgba(248,113,113,0.4);
+}
+.btn-secondary {
+  background: var(--bg3);
+  color: var(--text2);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--border);
+  color: var(--text);
+}
+
+/* ==================== Panel 2: Tasks ==================== */
+#task-panel { grid-row: 1; grid-column: 2; }
+.task-list { display: flex; flex-direction: column; gap: 8px; }
+.task-item {
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+.task-item.branch {
+  border-left: 3px solid var(--accent3);
+}
+.task-type {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.task-title {
+  color: var(--text);
+  font-weight: 500;
+}
+.task-meta {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 4px;
+}
+.branch-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--accent3);
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.branch-group {
+  margin-left: 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent3);
+  margin-bottom: 6px;
+}
+.branch-condition {
+  font-size: 11px;
+  color: var(--warn);
+  margin-bottom: 4px;
+  font-family: var(--mono);
+}
+.label-badge {
+  display: inline-block;
+  font-size: 12px;
+  background: var(--accent3);
+  color: #fff;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+/* ==================== Panel 3: CPL Block Editor ==================== */
+#cpl-panel { grid-row: 2; grid-column: 1 / -1; }
+
+/* Toggle bar */
+.cpl-toggle {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+.cpl-toggle button {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text2);
+  font-size: 11px;
+  cursor: pointer;
+  font-family: var(--sans);
+}
+.cpl-toggle button.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+
+/* Raw text editor (hidden by default) */
+.cpl-editor {
+  width: 100%;
+  height: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--accent2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 12px;
+  resize: none;
+  outline: none;
+  tab-size: 4;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}
+.cpl-editor:focus { border-color: var(--accent); }
+
+/* Block workspace */
+.block-workspace-wrap {
+  display: flex;
+  height: 100%;
+  gap: 0;
+}
+.block-toolbox {
+  width: 130px;
+  min-width: 130px;
+  background: var(--bg3);
+  border-right: 1px solid var(--border);
+  border-radius: 6px 0 0 6px;
+  padding: 8px 6px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.toolbox-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text2);
+  letter-spacing: 0.5px;
+  padding: 4px 4px 2px;
+}
+.toolbox-block {
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: grab;
+  user-select: none;
+  border: 1px solid rgba(0,0,0,0.08);
+  color: #1e293b;
+  text-align: left;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.toolbox-block:hover {
+  transform: scale(1.05);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+.toolbox-block:active { cursor: grabbing; }
+
+.block-canvas {
+  flex: 1;
+  background: var(--bg);
+  border-radius: 0 6px 6px 0;
+  border: 1px solid var(--border);
+  border-left: none;
+  padding: 10px;
+  overflow-y: auto;
+  min-height: 100px;
+  position: relative;
+}
+.block-canvas.drag-over {
+  background: rgba(0,212,255,0.04);
+  border-color: var(--accent);
+}
+
+/* Scratch blocks */
+.scratch-block {
+  position: relative;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-family: var(--sans);
+  color: #1e293b;
+  cursor: grab;
+  user-select: none;
+  transition: box-shadow 0.15s, transform 0.1s;
+  border: 2px solid rgba(0,0,0,0.08);
+}
+.scratch-block:active { cursor: grabbing; }
+.scratch-block.dragging {
+  opacity: 0.5;
+  transform: scale(0.97);
+}
+.scratch-block.drag-target {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 12px rgba(0,212,255,0.3);
+}
+.scratch-block.drop-above {
+  border-top: 3px solid var(--accent) !important;
+  margin-top: -1px;
+}
+.scratch-block.drop-below {
+  border-bottom: 3px solid var(--accent) !important;
+  margin-bottom: -1px;
+}
+.scratch-block::before {
+  content: '';
+  position: absolute;
+  top: -4px;
+  left: 18px;
+  width: 24px;
+  height: 4px;
+  border-radius: 0 0 4px 4px;
+  background: inherit;
+}
+.scratch-block::after {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: 18px;
+  width: 24px;
+  height: 4px;
+  border-radius: 4px 4px 0 0;
+  background: inherit;
+}
+.scratch-block:first-child::before { display: none; }
+.scratch-block:last-child::after { display: none; }
+
+/* Block header row */
+.block-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 12px;
+}
+.block-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+}
+.block-label { flex: 1; }
+.block-actions {
+  display: flex;
+  gap: 2px;
+}
+.block-btn {
+  background: rgba(0,0,0,0.08);
+  border: none;
+  color: #475569;
+  width: 20px; height: 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.block-btn:hover { background: rgba(0,0,0,0.15); }
+
+/* Block params */
+.block-params {
+  margin-top: 4px;
+  padding: 4px 6px;
+  background: rgba(0,0,0,0.06);
+  border-radius: 5px;
+  font-size: 11px;
+  font-family: var(--mono);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.param-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: rgba(0,0,0,0.08);
+  border-radius: 12px;
+  padding: 2px 8px;
+  font-size: 10px;
+}
+.param-chip .pk { color: rgba(0,0,0,0.45); }
+.param-chip .pv { color: #1e293b; font-weight: 600; }
+.param-chip input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(0,0,0,0.2);
+  color: #1e293b;
+  font-family: var(--mono);
+  font-size: 10px;
+  min-width: 30px;
+  outline: none;
+  font-weight: 600;
+  padding: 0 2px;
+}
+
+/* Nested blocks (IF branches) */
+.block-nest {
+  margin: 4px 0 4px 16px;
+  padding-left: 10px;
+  border-left: 3px solid rgba(0,0,0,0.15);
+  min-height: 30px;
+}
+.block-nest.elif-nest {
+  margin-top: 10px;
+  padding-top: 4px;
+  border-top: 1px dashed rgba(0,0,0,0.1);
+}
+.block-nest.else-nest {
+  margin-top: 10px;
+  padding-top: 4px;
+  border-top: 1px dashed rgba(0,0,0,0.1);
+}
+.nest-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #1e293b;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  background: rgba(0,0,0,0.08);
+  padding: 2px 8px;
+  border-radius: 10px;
+  width: fit-content;
+}
+.nest-label input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(0,0,0,0.2);
+  color: #1e293b;
+  font-size: 10px;
+  font-family: var(--mono);
+  outline: none;
+  padding: 0 2px;
+  min-width: 30px;
+}
+
+/* Block colors — professional light pastels */
+.b-pathway  { background: #e0f2fe; color: #0c4a6e; }
+.b-assert   { background: #ffe4e6; color: #881337; }
+.b-step     { background: #e8e0ff; color: #3b0764; }
+.b-execute  { background: #dbeafe; color: #1e3a5f; }
+.b-log      { background: #f1f5f9; color: #334155; }
+.b-notify   { background: #fef3c7; color: #78350f; }
+.b-if       { background: #f3e8ff; color: #581c87; }
+.b-repeat   { background: #ccfbf1; color: #134e4a; }
+.b-await    { background: #ffedd5; color: #7c2d12; }
+.b-rag      { background: #d1fae5; color: #064e3b; }
+.b-exam     { background: #ede9fe; color: #4c1d95; }
+
+.block-canvas-empty {
+  color: var(--text2);
+  font-size: 12px;
+  text-align: center;
+  padding: 30px 10px;
+  pointer-events: none;
+}
+
+/* ==================== Panel 4: Execution ==================== */
+#exec-panel { grid-row: 3; grid-column: 1 / -1; }
+.exec-log { display: flex; flex-direction: column; gap: 6px; }
+.exec-step {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  animation: fadeIn 0.3s ease;
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.exec-step.running {
+  border-color: var(--accent);
+  box-shadow: 0 0 8px rgba(0,212,255,0.15);
+}
+.exec-step.done {
+  border-color: var(--accent2);
+}
+.exec-step.failed {
+  border-color: var(--err);
+}
+.step-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.step-number {
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--accent);
+  font-family: var(--mono);
+}
+.step-agent {
+  font-weight: 600;
+  color: var(--text);
+}
+.step-type {
+  font-size: 10px;
+  color: var(--text2);
+  text-transform: uppercase;
+  margin-left: auto;
+}
+.step-status-icon {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.step-status-icon.running { background: var(--accent); animation: pulse 1s infinite; }
+.step-status-icon.done { background: var(--accent2); }
+.step-status-icon.failed { background: var(--err); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+.step-result {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text2);
+  line-height: 1.5;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* Summary */
+.exec-summary {
+  padding: 14px;
+  background: var(--bg3);
+  border: 1px solid var(--accent2);
+  border-radius: 6px;
+  margin-top: 8px;
+}
+.exec-summary h4 {
+  color: var(--accent2);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.summary-stat {
+  text-align: center;
+}
+.summary-stat .num {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+.summary-stat .lbl {
+  font-size: 11px;
+  color: var(--text2);
+}
+
+/* Archive */
+.archive-section {
+  margin-top: 12px;
+}
+.archive-section h4 {
+  color: var(--accent3);
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.archive-pair {
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 6px;
+}
+.archive-key {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: var(--mono);
+  margin-bottom: 2px;
+}
+.archive-val {
+  font-size: 11px;
+  color: var(--text2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+/* Pairs Review */
+.pairs-review {
+  margin-top: 12px;
+  padding: 14px;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+}
+.pairs-review h4 {
+  color: var(--accent);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.pair-item {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+.pair-item label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  font-family: var(--mono);
+  margin-bottom: 3px;
+}
+.pair-item textarea {
+  width: 100%;
+  min-height: 50px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--text);
+  background: var(--bg2);
+  resize: vertical;
+  margin-bottom: 6px;
+  box-sizing: border-box;
+}
+.pair-item textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.pair-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.pair-actions .btn {
+  font-size: 12px;
+  padding: 6px 16px;
+}
+.pair-confirmed {
+  color: var(--accent2);
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+/* Status bar */
+.site-footer {
+  text-align: center;
+  padding: 18px 0 38px;
+  font-size: 11px;
+  color: var(--text2);
+  opacity: 0.6;
+}
+.footer-sep {
+  margin: 0 6px;
+  opacity: 0.4;
+}
+
+.status-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  background: var(--bg3);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  font-size: 11px;
+  color: var(--text2);
+  gap: 16px;
+  z-index: 100;
+}
+.status-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent2);
+}
+.status-dot.disconnected { background: var(--err); }
+
+/* Loading spinner */
+.spinner {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Placeholder text */
+.placeholder {
+  color: var(--text2);
+  font-size: 13px;
+  text-align: center;
+  padding: 40px 20px;
+}
+.placeholder .icon {
+  font-size: 32px;
+  margin-bottom: 12px;
+  opacity: 0.3;
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Header -->
+  <header>
+    <h1>AutoCPL</h1>
+    <span style="color:var(--text2); font-size:12px;">临床路径自动化系统</span>
+    <div class="pipeline-indicator">
+      <div class="dot" id="dot-0" title="输入"></div>
+      <div class="dot" id="dot-1" title="分类"></div>
+      <div class="dot" id="dot-2" title="分解"></div>
+      <div class="dot" id="dot-3" title="CPL"></div>
+      <div class="dot" id="dot-4" title="执行"></div>
+    </div>
+  </header>
+
+  <!-- Main panels -->
+  <div class="main-grid" style="padding-bottom: 60px;">
+    <!-- Panel 1: Input -->
+    <div class="panel" id="input-panel">
+      <div class="panel-header">
+        <span>01</span> 对话输入
+        <span id="char-count-badge" class="badge" style="display:none;"></span>
+      </div>
+      <div class="panel-body" style="display:flex; flex-direction:column;">
+        <textarea class="input-area" id="dialogue-input" placeholder="在此粘贴或输入门诊对话内容...&#10;&#10;示例：&#10;患者：医生，我最近老是头疼...&#10;医生：头疼有多久了？"></textarea>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btn-start" onclick="startPipeline()">开始分析</button>
+          <button class="btn btn-next" id="btn-next" onclick="nextStep()" disabled>下一步</button>
+          <button class="btn btn-danger" id="btn-stop" onclick="cancelSession()" disabled>终止</button>
+          <button class="btn btn-secondary" id="btn-reset" onclick="resetAll()">重置</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel 2: Tasks -->
+    <div class="panel" id="task-panel">
+      <div class="panel-header">
+        <span>02</span> 任务列表
+        <span id="task-count-badge" class="badge" style="display:none;"></span>
+      </div>
+      <div class="panel-body">
+        <div id="task-container">
+          <div class="placeholder">
+            <div class="icon">📋</div>
+            等待对话输入后生成任务列表
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel 3: CPL Block Editor -->
+    <div class="panel" id="cpl-panel">
+      <div class="panel-header">
+        <span>03</span> CPL 脚本
+        <div class="cpl-toggle">
+          <button class="active" id="btn-view-block" onclick="switchCPLView('block')">积木</button>
+          <button id="btn-view-code" onclick="switchCPLView('code')">代码</button>
+        </div>
+      </div>
+      <div class="panel-body" style="padding:0;">
+        <!-- Block view -->
+        <div id="cpl-block-view" style="height:100%;">
+          <div class="block-workspace-wrap">
+            <div class="block-toolbox" id="block-toolbox"></div>
+            <div class="block-canvas" id="block-canvas">
+              <div class="block-canvas-empty" id="canvas-empty">将左侧积木拖入此处，或由系统自动生成</div>
+            </div>
+          </div>
+        </div>
+        <!-- Code view (hidden) -->
+        <div id="cpl-code-view" style="height:100%; display:none; padding:10px;">
+          <textarea class="cpl-editor" id="cpl-editor" placeholder="CPL脚本将在此生成..." disabled></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- Panel 4: Execution -->
+    <div class="panel" id="exec-panel">
+      <div class="panel-header">
+        <span>04</span> 执行结果
+        <span id="exec-count-badge" class="badge" style="display:none;"></span>
+      </div>
+      <div class="panel-body">
+        <div id="exec-container">
+          <div class="placeholder">
+            <div class="icon">⚡</div>
+            等待CPL脚本生成后执行
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<footer class="site-footer">
+  <span>© 2026 AutoCPL · Clinical Pathway Language</span>
+  <span class="footer-sep">|</span>
+  <span>Powered by GPT-4.1 & FAISS</span>
+</footer>
+
+<!-- Status bar -->
+<div class="status-bar">
+  <div class="status-dot" id="status-dot"></div>
+  <span id="status-text">就绪</span>
+  <span style="margin-left:auto;" id="session-info"></span>
+</div>
+
+<script>
+// ==================== State ====================
+let sessionId = null;
+let currentStage = 0; // 0=wait, 1=started, 2=classified, 3=decomposed, 4=cpl, 5=executing, 6=done
+const stages = ['输入', '分类', '分解', 'CPL生成', '执行'];
+
+const API = '';  // same origin
+
+// ==================== UI Helpers ====================
+function setStatus(text) {
+  document.getElementById('status-text').textContent = text;
+}
+
+function updateDots() {
+  for (let i = 0; i < 5; i++) {
+    const dot = document.getElementById(`dot-${i}`);
+    dot.className = 'dot';
+    if (i < currentStage) dot.classList.add('done');
+    else if (i === currentStage) dot.classList.add('active');
+  }
+}
+
+function enableBtn(id, en) {
+  document.getElementById(id).disabled = !en;
+}
+
+function showBadge(id, text) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.style.display = '';
+}
+
+function hideBadge(id) {
+  document.getElementById(id).style.display = 'none';
+}
+
+// ==================== API calls ====================
+async function apiPost(endpoint, body) {
+  setStatus(`请求 ${endpoint} ...`);
+  const res = await fetch(`${API}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || `HTTP ${res.status}`);
+  }
+  return res;
+}
+
+// ==================== Pipeline Steps ====================
+async function startPipeline() {
+  const dialogue = document.getElementById('dialogue-input').value.trim();
+  if (!dialogue) return alert('请输入对话内容');
+
+  try {
+    enableBtn('btn-start', false);
+    enableBtn('btn-stop', true);
+    currentStage = 0;
+    updateDots();
+
+    // Start session
+    const res = await apiPost('/api/start', { dialogue });
+    const data = await res.json();
+    sessionId = data.session_id;
+    document.getElementById('session-info').textContent = `Session: ${sessionId}`;
+    showBadge('char-count-badge', `${data.char_count} 字`);
+
+    currentStage = 1;
+    updateDots();
+    setStatus('会话已创建，点击"下一步"进行分类');
+    enableBtn('btn-next', true);
+  } catch (e) {
+    setStatus(`错误: ${e.message}`);
+    enableBtn('btn-start', true);
+  }
+}
+
+async function nextStep() {
+  if (!sessionId) return;
+
+  try {
+    enableBtn('btn-next', false);
+
+    if (currentStage === 1) {
+      await doClassify();
+    } else if (currentStage === 2) {
+      await doDecompose();
+    } else if (currentStage === 3) {
+      await doGenerateCPL();
+    } else if (currentStage === 4) {
+      await doExecute();
+    }
+  } catch (e) {
+    setStatus(`错误: ${e.message}`);
+    enableBtn('btn-next', true);
+  }
+}
+
+async function doClassify() {
+  setStatus('正在分类...');
+  const res = await apiPost('/api/classify', { session_id: sessionId });
+  const data = await res.json();
+
+  currentStage = 2;
+  updateDots();
+  setStatus(`分类完成: ${data.label}  →  点击"下一步"进行任务分解`);
+  enableBtn('btn-next', true);
+}
+
+async function doDecompose() {
+  setStatus('正在分解任务...');
+  const res = await apiPost('/api/decompose', { session_id: sessionId });
+  const data = await res.json();
+
+  // Render tasks
+  renderTasks(data);
+  showBadge('task-count-badge', `${data.task_count} 项`);
+
+  currentStage = 3;
+  updateDots();
+  setStatus(`任务分解完成 (${data.task_count}项)  →  点击"下一步"生成CPL`);
+  enableBtn('btn-next', true);
+}
+
+async function doGenerateCPL() {
+  setStatus('正在生成CPL脚本...');
+  const res = await apiPost('/api/generate_cpl', { session_id: sessionId });
+  const data = await res.json();
+
+  // Load into block editor + raw editor
+  loadCPLToBlockEditor(data.cpl);
+  switchCPLView('block');
+
+  currentStage = 4;
+  updateDots();
+  setStatus('CPL已生成 (可编辑积木或代码)  →  点击"下一步"开始执行');
+  enableBtn('btn-next', true);
+}
+
+async function doExecute() {
+  // 根据当前视图同步CPL：积木视图→从积木生成；代码视图→直接用编辑器内容
+  if (currentCPLView === 'block') {
+    syncBlocksToCPL();
+  }
+  const cplText = document.getElementById('cpl-editor').value;
+  await apiPost('/api/update_cpl', { session_id: sessionId, cpl_text: cplText });
+
+  setStatus('正在执行...');
+  currentStage = 5;
+  updateDots();
+
+  // 清空执行区
+  const container = document.getElementById('exec-container');
+  container.innerHTML = '<div class="exec-log" id="exec-log"></div>';
+  showBadge('exec-count-badge', '...');
+
+  // SSE流式执行
+  const res = await apiPost('/api/execute', { session_id: sessionId });
+
+  // 由于execute返回SSE (EventSource), 我们需要通过fetch + ReadableStream解析
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let stepCount = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop(); // keep incomplete last line
+
+    let eventType = '';
+    let eventData = '';
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, ''); // strip trailing \r from \r\n
+      if (line.startsWith('event:')) {
+        eventType = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        // SSE multi-line data: concatenate with previous
+        const chunk = line.slice(5).trim();
+        eventData = eventData ? eventData + '\n' + chunk : chunk;
+      } else if (line === '') {
+        // End of an event
+        if (eventType && eventData) {
+          handleSSEEvent(eventType, eventData);
+          if (eventType === 'step_done') stepCount++;
+        }
+        eventType = '';
+        eventData = '';
+      }
+    }
+  }
+
+  showBadge('exec-count-badge', `${stepCount} 步`);
+  currentStage = 6;
+  updateDots();
+  enableBtn('btn-stop', false);
+  setStatus('执行完毕');
+}
+
+function handleSSEEvent(event, dataStr) {
+  const log = document.getElementById('exec-log');
+  let data;
+  try { data = JSON.parse(dataStr); } catch { data = {}; }
+
+  if (event === 'plan') {
+    setStatus(`执行计划: ${data.pathway_name} | ${data.total_calls} 步`);
+  }
+  else if (event === 'step_start') {
+    const div = document.createElement('div');
+    div.className = 'exec-step running';
+    div.id = `step-${data.step}`;
+    div.innerHTML = `
+      <div class="step-header">
+        <span class="step-status-icon running"></span>
+        <span class="step-number">STEP ${data.step}</span>
+        <span class="step-agent">${data.agent}</span>
+        <span class="step-type">${data.call_type} · ${data.task_type}</span>
+      </div>
+      <div class="step-result"><span class="spinner"></span> 执行中...</div>
+    `;
+    log.appendChild(div);
+    div.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  else if (event === 'step_done') {
+    const div = document.getElementById(`step-${data.step}`);
+    if (div) {
+      div.className = `exec-step ${data.status}`;
+      const icon = div.querySelector('.step-status-icon');
+      icon.className = `step-status-icon ${data.status}`;
+      const resultDiv = div.querySelector('.step-result');
+      resultDiv.textContent = data.error || data.result || '(无输出)';
+    }
+    setStatus(`Step ${data.step} ${data.status === 'done' ? '✓' : '✗'} ${data.agent}`);
+  }
+  else if (event === 'complete') {
+    // Summary
+    const summary = document.createElement('div');
+    summary.className = 'exec-summary';
+    summary.innerHTML = `
+      <h4>执行摘要</h4>
+      <div class="summary-grid">
+        <div class="summary-stat">
+          <div class="num" style="color:var(--text)">${data.total}</div>
+          <div class="lbl">总步骤</div>
+        </div>
+        <div class="summary-stat">
+          <div class="num" style="color:var(--accent2)">${data.succeeded}</div>
+          <div class="lbl">成功</div>
+        </div>
+        <div class="summary-stat">
+          <div class="num" style="color:var(--err)">${data.failed}</div>
+          <div class="lbl">失败</div>
+        </div>
+      </div>
+    `;
+    log.appendChild(summary);
+
+    // Archive
+    if (data.archive && Object.keys(data.archive).length > 0) {
+      const archDiv = document.createElement('div');
+      archDiv.className = 'archive-section';
+      let html = '<h4>归档数据</h4>';
+      for (const [k, v] of Object.entries(data.archive)) {
+        html += `<div class="archive-pair">
+          <div class="archive-key">${escHtml(k)}</div>
+          <div class="archive-val">${escHtml(v)}</div>
+        </div>`;
+      }
+      archDiv.innerHTML = html;
+      log.appendChild(archDiv);
+    }
+
+    // Pairs review — 症状-诊断二元组审阅
+    if (data.pending_pairs && data.pending_pairs.length > 0) {
+      const pairsDiv = document.createElement('div');
+      pairsDiv.className = 'pairs-review';
+      pairsDiv.id = 'pairs-review';
+      let phtml = '<h4>📋 症状-诊断二元组（请审阅后确认归档）</h4>';
+      data.pending_pairs.forEach((p, i) => {
+        phtml += `<div class="pair-item" data-idx="${i}">
+          <label>病历记录 (record)</label>
+          <textarea class="pair-record" rows="3">${escHtml(p.record || '')}</textarea>
+          <label>诊断结论 (diagnostic)</label>
+          <textarea class="pair-diag" rows="2">${escHtml(p.diagnostic || '')}</textarea>
+        </div>`;
+      });
+      phtml += `<div class="pair-actions">
+        <button class="btn btn-primary" onclick="confirmPairs()">确认归档至 RAG</button>
+        <button class="btn btn-secondary" onclick="skipPairs()">跳过归档</button>
+      </div>`;
+      pairsDiv.innerHTML = phtml;
+      log.appendChild(pairsDiv);
+    }
+
+    log.lastElementChild.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  else if (event === 'error') {
+    const div = document.createElement('div');
+    div.className = 'exec-step failed';
+    div.innerHTML = `<div class="step-header"><span class="step-status-icon failed"></span><span class="step-agent">错误</span></div>
+      <div class="step-result">${escHtml(data.error)}</div>`;
+    log.appendChild(div);
+  }
+  else if (event === 'cancelled') {
+    setStatus('执行已被终止');
+  }
+}
+
+// ==================== Pairs Confirm ====================
+async function confirmPairs() {
+  if (!sessionId) return;
+  const container = document.getElementById('pairs-review');
+  if (!container) return;
+
+  const items = container.querySelectorAll('.pair-item');
+  const pairs = [];
+  items.forEach(item => {
+    const record = item.querySelector('.pair-record').value.trim();
+    const diag = item.querySelector('.pair-diag').value.trim();
+    if (record && diag) {
+      pairs.push({ record, diagnostic: diag });
+    }
+  });
+
+  if (pairs.length === 0) {
+    skipPairs();
+    return;
+  }
+
+  try {
+    const res = await apiPost('/api/confirm_pairs', { session_id: sessionId, pairs });
+    const result = await res.json();
+    container.innerHTML = `<div class="pair-confirmed">✓ 已归档 ${result.saved} 条二元组至 RAG 数据库（库容量: ${result.total} 条）</div>`;
+    setStatus(`归档完成: ${result.saved} 条已存入 RAG`);
+  } catch (e) {
+    setStatus(`归档失败: ${e.message}`);
+  }
+}
+
+function skipPairs() {
+  const container = document.getElementById('pairs-review');
+  if (container) {
+    container.innerHTML = '<div class="pair-confirmed" style="color:var(--text2);">⏭ 已跳过归档</div>';
+  }
+  setStatus('已跳过归档');
+}
+
+// ==================== Render Tasks ====================
+function renderTasks(data) {
+  const container = document.getElementById('task-container');
+  let html = '';
+
+  if (data.label) {
+    html += `<div class="label-badge">标签: ${escHtml(data.label)}</div>`;
+  }
+  html += '<div class="task-list">';
+
+  for (const item of data.tasks) {
+    if (item.type === 'branch') {
+      html += renderBranch(item);
+    } else {
+      html += renderTask(item);
+    }
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderBranch(branch) {
+  let html = `<div class="task-item branch">
+    <div class="branch-header">⑂ 分支: ${escHtml(branch.condition)}</div>`;
+
+  for (const b of branch.branches) {
+    html += `<div class="branch-group">
+      <div class="branch-condition">IF ${escHtml(b.condition_value)}</div>`;
+    for (const t of b.tasks) {
+      html += renderTask(t, true);
+    }
+    html += '</div>';
+  }
+
+  if (branch.else_tasks && branch.else_tasks.length) {
+    html += `<div class="branch-group">
+      <div class="branch-condition">ELSE</div>`;
+    for (const t of branch.else_tasks) {
+      html += renderTask(t, true);
+    }
+    html += '</div>';
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderTask(task, nested) {
+  const typeLabel = task.task_type || task.type || '';
+  const title = task.description || task.task_id || '';
+  const deps = task.depends_on ? `依赖: ${task.depends_on.join(', ')}` : '';
+  return `<div class="task-item${nested ? '' : ''}">
+    <div class="task-type">${escHtml(typeLabel)}</div>
+    <div class="task-title">${escHtml(title)}</div>
+    ${deps ? `<div class="task-meta">${escHtml(deps)}</div>` : ''}
+  </div>`;
+}
+
+// ==================== Cancel & Reset ====================
+async function cancelSession() {
+  if (!sessionId) return;
+  try {
+    await apiPost('/api/cancel', { session_id: sessionId });
+    setStatus('会话已终止');
+    enableBtn('btn-next', false);
+    enableBtn('btn-stop', false);
+  } catch (e) {
+    setStatus(`终止失败: ${e.message}`);
+  }
+}
+
+function resetAll() {
+  sessionId = null;
+  currentStage = 0;
+  updateDots();
+  setStatus('就绪');
+
+  document.getElementById('dialogue-input').value = '';
+  document.getElementById('cpl-editor').value = '';
+  document.getElementById('cpl-editor').disabled = true;
+  cplBlocks = [];
+  renderBlocks();
+  switchCPLView('block');
+  document.getElementById('task-container').innerHTML = '<div class="placeholder"><div class="icon">📋</div>等待对话输入后生成任务列表</div>';
+  document.getElementById('exec-container').innerHTML = '<div class="placeholder"><div class="icon">⚡</div>等待CPL脚本生成后执行</div>';
+  document.getElementById('session-info').textContent = '';
+
+  hideBadge('char-count-badge');
+  hideBadge('task-count-badge');
+  hideBadge('exec-count-badge');
+
+  enableBtn('btn-start', true);
+  enableBtn('btn-next', false);
+  enableBtn('btn-stop', false);
+}
+
+function escHtml(s) {
+  if (typeof s !== 'string') return '';
+  const div = document.createElement('div');
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function autoSizeInput(input) {
+  const span = document.createElement('span');
+  span.style.cssText = 'visibility:hidden;position:absolute;white-space:pre;font-size:10px;font-family:var(--mono);';
+  span.textContent = input.value || ' ';
+  document.body.appendChild(span);
+  input.style.width = Math.max(30, span.offsetWidth + 8) + 'px';
+  document.body.removeChild(span);
+}
+
+// ==================== Scratch Block Editor ====================
+
+// Block type definitions
+const BLOCK_DEFS = {
+  execute_agent: {
+    icon: '🤖', label: 'Agent 调用', cls: 'b-execute',
+    defaultParams: { agent: 'patient_profile', variable: 'medical_record' },
+    agentOptions: [
+      { agent: 'patient_profile',     variable: 'medical_record', label: '病历生成' },
+      { agent: 'diagnostic',          variable: 'diagnostic',     label: 'AI诊断' },
+      { agent: 'examination_order',   variable: 'exam_order',     label: '检查申请' },
+      { agent: 'exam_execution',       variable: 'exam_data',      label: '检查执行' },
+      { agent: 'prescription',        variable: 'prescription',   label: '开具处方' },
+      { agent: 'schedule',            variable: 'schedule',       label: '诊疗计划' },
+      { agent: 'treatment_execution', variable: 'treatment',      label: '执行治疗' },
+      { agent: 'result_review',       variable: 'exam_result',    label: '结果回读' },
+      { agent: 'recovery_advice',     variable: 'recovery',       label: '康复建议' },
+      { agent: 'notification',        variable: '',               label: '发送通知' },
+      { agent: 'admission_discharge', variable: 'admission',      label: '入出院' },
+    ],
+  },
+  execute_rag:      { icon: '💾', label: 'RAG 归档', cls: 'b-rag', defaultParams: { record: 'medical_record', diagnostic: 'diagnostic' } },
+  execute_exam:     { icon: '🔬', label: '检查操作', cls: 'b-exam', defaultParams: { target: 'blood_test' } },
+  assert_block:     { icon: '🛡️', label: 'ASSERT', cls: 'b-assert', defaultParams: { condition: 'patient.consent == True', message: '未签署知情同意' } },
+  log_block:        { icon: '📝', label: 'LOG', cls: 'b-log', defaultParams: { message: '操作完成', level: 'INFO' } },
+  notify_block:     { icon: '🔔', label: 'NOTIFY', cls: 'b-notify', defaultParams: { target: 'doctor.primary', message: '请关注' } },
+  if_block:         { icon: '🔀', label: 'IF 分支', cls: 'b-if', defaultParams: { condition: 'label == "感冒"' }, hasNest: true },
+};
+
+const TOOLBOX_GROUPS = [
+  { label: '执行', items: ['execute_agent', 'execute_rag', 'execute_exam'] },
+  { label: '控制', items: ['if_block', 'assert_block'] },
+  { label: '辅助', items: ['log_block', 'notify_block'] },
+];
+
+// Block data model: array of block objects
+let cplBlocks = [];
+let blockIdCounter = 0;
+
+function newBlockId() { return `blk_${++blockIdCounter}`; }
+
+function createBlockData(type, paramOverrides) {
+  const def = BLOCK_DEFS[type];
+  if (!def) return null;
+  return {
+    id: newBlockId(),
+    type,
+    params: { ...(def.defaultParams || {}), ...(paramOverrides || {}) },
+    children: [],  // for IF block nested blocks
+    elseChildren: [], // for IF block ELSE
+    elifBranches: [], // [{condition, children}]
+  };
+}
+
+// ==================== Toolbox ====================
+function initToolbox() {
+  const tb = document.getElementById('block-toolbox');
+  tb.innerHTML = '';
+  for (const group of TOOLBOX_GROUPS) {
+    const lbl = document.createElement('div');
+    lbl.className = 'toolbox-label';
+    lbl.textContent = group.label;
+    tb.appendChild(lbl);
+
+    for (const type of group.items) {
+      const def = BLOCK_DEFS[type];
+      const btn = document.createElement('div');
+      btn.className = `toolbox-block ${def.cls}`;
+      btn.textContent = `${def.icon} ${def.label}`;
+      btn.draggable = true;
+      btn.addEventListener('dragstart', (e) => {
+        e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'toolbox', type }));
+        e.dataTransfer.effectAllowed = 'copy';
+      });
+      // also allow click-to-add
+      btn.addEventListener('click', () => {
+        cplBlocks.push(createBlockData(type));
+        renderBlocks();
+        syncBlocksToCPL();
+      });
+      tb.appendChild(btn);
+    }
+  }
+}
+
+// ==================== Render Blocks ====================
+function renderBlocks() {
+  const canvas = document.getElementById('block-canvas');
+  const empty = document.getElementById('canvas-empty');
+  canvas.innerHTML = '';
+  if (cplBlocks.length === 0) {
+    canvas.appendChild(empty.cloneNode(true));
+    setupCanvasDrop(canvas);
+    return;
+  }
+  for (let i = 0; i < cplBlocks.length; i++) {
+    canvas.appendChild(renderOneBlock(cplBlocks[i], i, cplBlocks, null));
+  }
+  setupCanvasDrop(canvas);
+}
+
+function renderOneBlock(block, index, parentArr, parentBlock) {
+  const def = BLOCK_DEFS[block.type] || { icon: '?', label: block.type, cls: 'b-execute' };
+  const div = document.createElement('div');
+  div.className = `scratch-block ${def.cls}`;
+  div.draggable = true;
+  div.dataset.blockId = block.id;
+
+  // Drag within canvas
+  div.addEventListener('dragstart', (e) => {
+    e.stopPropagation();
+    e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'canvas', blockId: block.id }));
+    e.dataTransfer.effectAllowed = 'move';
+    div.classList.add('dragging');
+  });
+  div.addEventListener('dragend', () => div.classList.remove('dragging'));
+  div.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'move';
+    div.classList.remove('drop-above', 'drop-below', 'drag-target');
+    const rect = div.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    if (e.clientY < midY) {
+      div.classList.add('drop-above');
+    } else {
+      div.classList.add('drop-below');
+    }
+  });
+  div.addEventListener('dragleave', () => div.classList.remove('drop-above', 'drop-below', 'drag-target'));
+  div.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = div.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const insertAfter = e.clientY >= midY;
+    div.classList.remove('drop-above', 'drop-below', 'drag-target');
+    handleBlockDrop(e, parentArr, insertAfter ? index + 1 : index);
+  });
+
+  // Head
+  const head = document.createElement('div');
+  head.className = 'block-head';
+
+  const icon = document.createElement('span');
+  icon.className = 'block-icon';
+  icon.textContent = def.icon;
+
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'block-label';
+  // For agent blocks, show the selected agent label
+  if (block.type === 'execute_agent') {
+    const opt = def.agentOptions.find(o => o.agent === block.params.agent);
+    labelSpan.textContent = opt ? opt.label : def.label;
+  } else {
+    labelSpan.textContent = def.label;
+  }
+
+  const actions = document.createElement('div');
+  actions.className = 'block-actions';
+
+  const delBtn = document.createElement('button');
+  delBtn.className = 'block-btn';
+  delBtn.textContent = '×';
+  delBtn.title = '删除';
+  delBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    parentArr.splice(index, 1);
+    renderBlocks();
+    syncBlocksToCPL();
+  });
+  actions.appendChild(delBtn);
+
+  // Duplicate
+  const dupBtn = document.createElement('button');
+  dupBtn.className = 'block-btn';
+  dupBtn.textContent = '⊕';
+  dupBtn.title = '复制';
+  dupBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dup = JSON.parse(JSON.stringify(block));
+    dup.id = newBlockId();
+    parentArr.splice(index + 1, 0, dup);
+    renderBlocks();
+    syncBlocksToCPL();
+  });
+  actions.appendChild(dupBtn);
+
+  head.appendChild(icon);
+  head.appendChild(labelSpan);
+  head.appendChild(actions);
+  div.appendChild(head);
+
+  // Params
+  const paramsDiv = document.createElement('div');
+  paramsDiv.className = 'block-params';
+
+  if (block.type === 'execute_agent') {
+    // Agent selector dropdown
+    const sel = document.createElement('select');
+    sel.style.cssText = 'background:rgba(0,0,0,0.08);border:none;color:#1e293b;border-radius:10px;padding:2px 6px;font-size:10px;outline:none;font-family:var(--mono);';
+    for (const opt of def.agentOptions) {
+      const o = document.createElement('option');
+      o.value = opt.agent;
+      o.textContent = `${opt.label} (${opt.agent})`;
+      o.style.background = '#f8fafc';
+      if (opt.agent === block.params.agent) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener('change', () => {
+      const chosen = def.agentOptions.find(o => o.agent === sel.value);
+      block.params.agent = chosen.agent;
+      block.params.variable = chosen.variable;
+      renderBlocks();
+      syncBlocksToCPL();
+    });
+    paramsDiv.appendChild(sel);
+
+    // Show variable name
+    if (block.params.variable) {
+      const chip = document.createElement('span');
+      chip.className = 'param-chip';
+      chip.innerHTML = `<span class="pk">→</span><span class="pv">${escHtml(block.params.variable)}</span>`;
+      paramsDiv.appendChild(chip);
+    }
+  } else {
+    // Generic editable params
+    for (const [key, val] of Object.entries(block.params)) {
+      const chip = document.createElement('span');
+      chip.className = 'param-chip';
+      const pk = document.createElement('span');
+      pk.className = 'pk';
+      pk.textContent = key + ':';
+      const inp = document.createElement('input');
+      inp.value = val;
+      autoSizeInput(inp);
+      inp.addEventListener('input', () => autoSizeInput(inp));
+      inp.addEventListener('change', () => {
+        block.params[key] = inp.value;
+        syncBlocksToCPL();
+      });
+      inp.addEventListener('click', (e) => e.stopPropagation());
+      chip.appendChild(pk);
+      chip.appendChild(inp);
+      paramsDiv.appendChild(chip);
+    }
+  }
+  div.appendChild(paramsDiv);
+
+  // Nested blocks for IF
+  if (block.type === 'if_block') {
+    // IF body
+    const ifNest = document.createElement('div');
+    ifNest.className = 'block-nest';
+    const ifLabel = document.createElement('div');
+    ifLabel.className = 'nest-label';
+    ifLabel.textContent = 'THEN';
+    ifNest.appendChild(ifLabel);
+    setupNestDrop(ifNest, block.children);
+    for (let ci = 0; ci < block.children.length; ci++) {
+      ifNest.appendChild(renderOneBlock(block.children[ci], ci, block.children, block));
+    }
+    if (block.children.length === 0) {
+      const ph = document.createElement('div');
+      ph.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.3);padding:6px 0;';
+      ph.textContent = '拖入积木...';
+      ifNest.appendChild(ph);
+    }
+    div.appendChild(ifNest);
+
+    // ELIF branches
+    for (let ei = 0; ei < block.elifBranches.length; ei++) {
+      const eb = block.elifBranches[ei];
+      const elifNest = document.createElement('div');
+      elifNest.className = 'block-nest elif-nest';
+      const elifLabel = document.createElement('div');
+      elifLabel.className = 'nest-label';
+      const elifText = document.createElement('span');
+      elifText.textContent = 'ELIF';
+      elifLabel.appendChild(elifText);
+      const elifInput = document.createElement('input');
+      elifInput.value = eb.condition;
+      autoSizeInput(elifInput);
+      elifInput.addEventListener('input', () => autoSizeInput(elifInput));
+      elifInput.addEventListener('change', () => {
+        eb.condition = elifInput.value;
+        syncBlocksToCPL();
+      });
+      elifLabel.appendChild(elifInput);
+      elifNest.appendChild(elifLabel);
+      setupNestDrop(elifNest, eb.children);
+      for (let ci = 0; ci < eb.children.length; ci++) {
+        elifNest.appendChild(renderOneBlock(eb.children[ci], ci, eb.children, block));
+      }
+      if (eb.children.length === 0) {
+        const ph = document.createElement('div');
+        ph.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.3);padding:6px 0;';
+        ph.textContent = '拖入积木...';
+        elifNest.appendChild(ph);
+      }
+      div.appendChild(elifNest);
+    }
+
+    // ELSE body
+    const elseNest = document.createElement('div');
+    elseNest.className = 'block-nest else-nest';
+    const elseLabel = document.createElement('div');
+    elseLabel.className = 'nest-label';
+    elseLabel.textContent = 'ELSE';
+    elseNest.appendChild(elseLabel);
+    setupNestDrop(elseNest, block.elseChildren);
+    for (let ci = 0; ci < block.elseChildren.length; ci++) {
+      elseNest.appendChild(renderOneBlock(block.elseChildren[ci], ci, block.elseChildren, block));
+    }
+    if (block.elseChildren.length === 0) {
+      const ph = document.createElement('div');
+      ph.style.cssText = 'font-size:10px;color:rgba(255,255,255,0.3);padding:6px 0;';
+      ph.textContent = '拖入积木...';
+      elseNest.appendChild(ph);
+    }
+    div.appendChild(elseNest);
+
+    // Add ELIF button
+    const addElifBtn = document.createElement('button');
+    addElifBtn.className = 'block-btn';
+    addElifBtn.style.cssText = 'width:auto;padding:2px 8px;font-size:10px;margin-top:4px;';
+    addElifBtn.textContent = '+ ELIF';
+    addElifBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      block.elifBranches.push({ condition: 'label == "..."', children: [] });
+      renderBlocks();
+      syncBlocksToCPL();
+    });
+    div.appendChild(addElifBtn);
+  }
+
+  return div;
+}
+
+function setupCanvasDrop(canvas) {
+  canvas.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    canvas.classList.add('drag-over');
+  });
+  canvas.addEventListener('dragleave', () => canvas.classList.remove('drag-over'));
+  canvas.addEventListener('drop', (e) => {
+    e.preventDefault();
+    canvas.classList.remove('drag-over');
+    handleBlockDrop(e, cplBlocks, cplBlocks.length);
+  });
+}
+
+function setupNestDrop(nestDiv, childArr) {
+  nestDiv.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  nestDiv.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    handleBlockDrop(e, childArr, childArr.length);
+  });
+}
+
+function handleBlockDrop(e, targetArr, targetIndex) {
+  let info;
+  try { info = JSON.parse(e.dataTransfer.getData('text/plain')); } catch { return; }
+
+  if (info.source === 'toolbox') {
+    const block = createBlockData(info.type);
+    if (block) {
+      targetArr.splice(targetIndex, 0, block);
+      renderBlocks();
+      syncBlocksToCPL();
+    }
+  } else if (info.source === 'canvas') {
+    // Find current position of dragged block before removal
+    const srcIndex = targetArr.indexOf(targetArr.find(b => b && b.id === info.blockId));
+    const sameArray = srcIndex !== -1;
+    const removed = removeBlockById(cplBlocks, info.blockId);
+    if (removed) {
+      // Adjust target index if source was in same array and before target
+      let adjustedIndex = targetIndex;
+      if (sameArray && srcIndex < targetIndex) {
+        adjustedIndex = Math.max(0, targetIndex - 1);
+      }
+      targetArr.splice(adjustedIndex, 0, removed);
+      renderBlocks();
+      syncBlocksToCPL();
+    }
+  }
+}
+
+function removeBlockById(arr, id) {
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i].id === id) return arr.splice(i, 1)[0];
+    if (arr[i].children) {
+      const found = removeBlockById(arr[i].children, id);
+      if (found) return found;
+    }
+    if (arr[i].elseChildren) {
+      const found = removeBlockById(arr[i].elseChildren, id);
+      if (found) return found;
+    }
+    if (arr[i].elifBranches) {
+      for (const eb of arr[i].elifBranches) {
+        const found = removeBlockById(eb.children, id);
+        if (found) return found;
+      }
+    }
+  }
+  return null;
+}
+
+// ==================== CPL View Toggle ====================
+let currentCPLView = 'block';
+
+function switchCPLView(view) {
+  currentCPLView = view;
+  document.getElementById('btn-view-block').classList.toggle('active', view === 'block');
+  document.getElementById('btn-view-code').classList.toggle('active', view === 'code');
+  document.getElementById('cpl-block-view').style.display = view === 'block' ? '' : 'none';
+  document.getElementById('cpl-code-view').style.display = view === 'code' ? '' : 'none';
+
+  if (view === 'code') {
+    syncBlocksToCPL();
+  } else {
+    // sync code back to blocks if user edited text
+    const editor = document.getElementById('cpl-editor');
+    if (editor.value.trim()) {
+      cplBlocks = parseCPLToBlocks(editor.value);
+      renderBlocks();
+    }
+  }
+}
+
+// ==================== Blocks → CPL ====================
+function syncBlocksToCPL() {
+  const cpl = blocksToCPL(cplBlocks);
+  document.getElementById('cpl-editor').value = cpl;
+}
+
+function blocksToCPL(blocks) {
+  const lines = [];
+  lines.push('# AutoCLP CPL Script');
+  lines.push('# Generated by: CPL Block Editor');
+  lines.push(`# Date: ${new Date().toISOString().slice(0,16).replace('T',' ')}`);
+  lines.push('');
+  lines.push('PATHWAY "门诊处理路径":');
+  lines.push('');
+
+  // Gather asserts first
+  const asserts = blocks.filter(b => b.type === 'assert_block');
+  const others = blocks.filter(b => b.type !== 'assert_block');
+
+  if (asserts.length) {
+    lines.push('    # ---- 前置断言 ----');
+    for (const a of asserts) {
+      lines.push(`    ASSERT ${a.params.condition}, "${a.params.message}"`);
+    }
+    lines.push('');
+  }
+
+  let stepNum = 0;
+  for (const block of others) {
+    stepNum++;
+    const stepLines = blockToStepCPL(block, stepNum);
+    lines.push(...stepLines);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+function blockToStepCPL(block, stepNum) {
+  const lines = [];
+  const I = '    '; // 4-space indent
+  const II = I + I;
+
+  if (block.type === 'execute_agent') {
+    const opt = BLOCK_DEFS.execute_agent.agentOptions.find(o => o.agent === block.params.agent);
+    const label = opt ? opt.label : '执行';
+    lines.push(`${I}STEP ${stepNum} "${label}":`);
+    if (block.params.variable) {
+      lines.push(`${II}${block.params.variable} = EXECUTE agent.${block.params.agent}(`);
+      lines.push(`${II}    input=AUTO`);
+      lines.push(`${II})`);
+    } else {
+      lines.push(`${II}EXECUTE agent.${block.params.agent}(input=AUTO)`);
+    }
+    lines.push(`${II}LOG "${label}完成" LEVEL INFO`);
+  }
+  else if (block.type === 'execute_rag') {
+    lines.push(`${I}STEP ${stepNum} "RAG归档":`);
+    lines.push(`${II}EXECUTE rag.archive(`);
+    lines.push(`${II}    record=${block.params.record},`);
+    lines.push(`${II}    diagnostic=${block.params.diagnostic}`);
+    lines.push(`${II})`);
+    lines.push(`${II}LOG "已归档至RAG向量数据库" LEVEL INFO`);
+  }
+  else if (block.type === 'execute_exam') {
+    lines.push(`${I}STEP ${stepNum} "检查操作":`);
+    lines.push(`${II}EXECUTE exam.${block.params.target}()`);
+  }
+  else if (block.type === 'log_block') {
+    lines.push(`${I}STEP ${stepNum} "日志":`);
+    lines.push(`${II}LOG "${block.params.message}" LEVEL ${block.params.level}`);
+  }
+  else if (block.type === 'notify_block') {
+    lines.push(`${I}STEP ${stepNum} "通知":`);
+    lines.push(`${II}NOTIFY ${block.params.target}(message="${block.params.message}")`);
+  }
+  else if (block.type === 'if_block') {
+    lines.push(`${I}STEP ${stepNum} "条件分支处理":`);
+    lines.push(`${II}IF ${block.params.condition}:`);
+    for (const child of block.children) {
+      const childLines = blockBodyCPL(child);
+      for (const cl of childLines) lines.push(`${II}    ${cl}`);
+    }
+    for (const eb of (block.elifBranches || [])) {
+      lines.push(`${II}ELIF ${eb.condition}:`);
+      for (const child of eb.children) {
+        const childLines = blockBodyCPL(child);
+        for (const cl of childLines) lines.push(`${II}    ${cl}`);
+      }
+    }
+    if (block.elseChildren && block.elseChildren.length) {
+      lines.push(`${II}ELSE:`);
+      for (const child of block.elseChildren) {
+        const childLines = blockBodyCPL(child);
+        for (const cl of childLines) lines.push(`${II}    ${cl}`);
+      }
+    }
+  }
+
+  return lines;
+}
+
+function blockBodyCPL(block) {
+  // Generate body lines for a block nested inside IF/ELSE (no STEP wrapper)
+  const lines = [];
+  if (block.type === 'execute_agent') {
+    if (block.params.variable) {
+      lines.push(`${block.params.variable} = EXECUTE agent.${block.params.agent}(input=AUTO)`);
+    } else {
+      lines.push(`EXECUTE agent.${block.params.agent}(input=AUTO)`);
+    }
+  } else if (block.type === 'execute_rag') {
+    lines.push(`EXECUTE rag.archive(record=${block.params.record}, diagnostic=${block.params.diagnostic})`);
+  } else if (block.type === 'execute_exam') {
+    lines.push(`EXECUTE exam.${block.params.target}()`);
+  } else if (block.type === 'log_block') {
+    lines.push(`LOG "${block.params.message}" LEVEL ${block.params.level}`);
+  } else if (block.type === 'notify_block') {
+    lines.push(`NOTIFY ${block.params.target}(message="${block.params.message}")`);
+  }
+  return lines;
+}
+
+// ==================== CPL → Blocks ====================
+function parseCPLToBlocks(cplText) {
+  const blocks = [];
+  const lines = cplText.split('\n');
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i].trim();
+
+    // Skip comments, empty, PATHWAY, ASSERT
+    if (!line || line.startsWith('#') || line.startsWith('PATHWAY')) { i++; continue; }
+
+    if (line.startsWith('ASSERT')) {
+      const m = line.match(/^ASSERT\s+(.+?),\s*"(.+?)"/);
+      if (m) blocks.push(createBlockData('assert_block', { condition: m[1], message: m[2] }));
+      i++; continue;
+    }
+
+    if (line.match(/^STEP\s+\d+/)) {
+      // Collect STEP body
+      i++;
+      const stepBody = [];
+      while (i < lines.length) {
+        const sl = lines[i];
+        const trimmed = sl.trim();
+        // Next STEP or end
+        if (trimmed.match(/^STEP\s+\d+/) || (trimmed && !sl.startsWith('        ') && !sl.startsWith('\t\t') && !trimmed.startsWith('#') && trimmed !== '')) {
+          // Check if it's truly a new STEP or top-level
+          if (trimmed.match(/^STEP\s+\d+/)) break;
+          // Could be epilogue / EXECUTE rag at top level
+          if (sl.match(/^    \S/) && !sl.match(/^        /)) break;
+        }
+        if (trimmed === '') { i++; continue; }
+        stepBody.push(trimmed);
+        i++;
+      }
+      // Parse step body into block
+      const parsed = parseStepBody(stepBody);
+      if (parsed) blocks.push(parsed);
+      continue;
+    }
+
+    // Top-level EXECUTE (epilogue)
+    if (line.match(/^EXECUTE\s+rag\.archive/i)) {
+      blocks.push(createBlockData('execute_rag'));
+      i++; continue;
+    }
+    if (line.startsWith('LOG')) {
+      const m = line.match(/LOG\s+"(.+?)"\s*(?:LEVEL\s+(\w+))?/);
+      blocks.push(createBlockData('log_block', { message: m ? m[1] : '', level: m && m[2] ? m[2] : 'INFO' }));
+      i++; continue;
+    }
+
+    i++;
+  }
+
+  return blocks;
+}
+
+function parseStepBody(bodyLines) {
+  if (!bodyLines.length) return null;
+
+  // Detect IF block
+  const firstLine = bodyLines[0];
+  if (firstLine.startsWith('IF ')) {
+    return parseIfFromBody(bodyLines);
+  }
+
+  // Detect EXECUTE
+  for (const line of bodyLines) {
+    // agent.xxx
+    let m = line.match(/(?:(\w+)\s*=\s*)?EXECUTE\s+agent\.(\w+)/);
+    if (m) {
+      const agent = m[2];
+      const variable = m[1] || '';
+      return createBlockData('execute_agent', { agent, variable });
+    }
+    // rag
+    m = line.match(/EXECUTE\s+rag\.archive/);
+    if (m) return createBlockData('execute_rag');
+    // exam
+    m = line.match(/EXECUTE\s+exam\.(\w+)/);
+    if (m) return createBlockData('execute_exam', { target: m[1] });
+  }
+
+  // LOG
+  for (const line of bodyLines) {
+    const m = line.match(/^LOG\s+"(.+?)"\s*(?:LEVEL\s+(\w+))?/);
+    if (m) return createBlockData('log_block', { message: m[1], level: m[2] || 'INFO' });
+  }
+
+  // NOTIFY
+  for (const line of bodyLines) {
+    const m = line.match(/^NOTIFY\s+(\S+?)\(message="(.+?)"\)/);
+    if (m) return createBlockData('notify_block', { target: m[1], message: m[2] });
+  }
+
+  return null;
+}
+
+function parseIfFromBody(bodyLines) {
+  const block = createBlockData('if_block');
+  // parse condition
+  const condMatch = bodyLines[0].match(/^IF\s+(.+?)\s*:/);
+  if (condMatch) block.params.condition = condMatch[1];
+
+  let currentTarget = block.children; // where to push child blocks
+  let i = 1;
+  while (i < bodyLines.length) {
+    const line = bodyLines[i].trim() || bodyLines[i];
+    const trimmed = typeof line === 'string' ? line.trim() : '';
+
+    if (trimmed.match(/^ELIF\s+/)) {
+      const m = trimmed.match(/^ELIF\s+(.+?)\s*:/);
+      const eb = { condition: m ? m[1] : '', children: [] };
+      block.elifBranches.push(eb);
+      currentTarget = eb.children;
+      i++; continue;
+    }
+    if (trimmed.match(/^ELSE\s*:/)) {
+      currentTarget = block.elseChildren;
+      i++; continue;
+    }
+    if (trimmed && !trimmed.startsWith('#')) {
+      const parsed = parseSingleLine(trimmed);
+      if (parsed) currentTarget.push(parsed);
+    }
+    i++;
+  }
+  return block;
+}
+
+function parseSingleLine(line) {
+  let m;
+  m = line.match(/(?:(\w+)\s*=\s*)?EXECUTE\s+agent\.(\w+)/);
+  if (m) return createBlockData('execute_agent', { agent: m[2], variable: m[1] || '' });
+  m = line.match(/EXECUTE\s+rag\.archive/);
+  if (m) return createBlockData('execute_rag');
+  m = line.match(/EXECUTE\s+exam\.(\w+)/);
+  if (m) return createBlockData('execute_exam', { target: m[1] });
+  m = line.match(/LOG\s+"(.+?)"\s*(?:LEVEL\s+(\w+))?/);
+  if (m) return createBlockData('log_block', { message: m[1], level: m[2] || 'INFO' });
+  m = line.match(/NOTIFY\s+(\S+?)\(message="(.+?)"\)/);
+  if (m) return createBlockData('notify_block', { target: m[1], message: m[2] });
+  return null;
+}
+
+// ==================== Integration: load CPL into blocks ====================
+function loadCPLToBlockEditor(cplText) {
+  cplBlocks = parseCPLToBlocks(cplText);
+  document.getElementById('cpl-editor').value = cplText;
+  document.getElementById('cpl-editor').disabled = false;
+  renderBlocks();
+}
+
+// ==================== Init ====================
+initToolbox();
+renderBlocks();
+updateDots();
+</script>
+</body>
+</html>
+</body>
+</html>

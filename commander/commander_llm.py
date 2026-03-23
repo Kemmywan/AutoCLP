@@ -5,7 +5,7 @@ from datetime import datetime
 from ambient.models import RawClinicalData
 from .task_schema import (
     BaseTask, TaskType, TaskStatus,
-    PatientProfileTask, ExaminationOrderTask,
+    PatientProfileTask, ExaminationOrderTask, ExamExecutionTask,
     PrescriptionTask, DiagnosticTask, ScheduleTask,
     TreatmentExecutionTask, NotificationTask,
     ResultReviewTask, AdmissionDischargeTask,
@@ -44,6 +44,7 @@ class TaskFactory:
         builders = {
             TaskType.PATIENT_PROFILE:      cls._build_patient_profile,
             TaskType.EXAMINATION_ORDER:    cls._build_examination_order,
+            TaskType.EXAM_EXECUTION:        cls._build_exam_execution,
             TaskType.PRESCRIPTION:         cls._build_prescription,
             TaskType.DIAGNOSTIC:           cls._build_diagnostic,
             TaskType.SCHEDULE:             cls._build_schedule,
@@ -91,6 +92,14 @@ class TaskFactory:
         )
 
     @staticmethod
+    def _build_exam_execution(params, depends_on, summary):
+        return ExamExecutionTask(
+            exam_items=params.get("exam_items", []),
+            data_mode=params.get("data_mode", "auto_generate"),
+            depends_on=depends_on
+        )
+
+    @staticmethod
     def _build_prescription(params, depends_on, summary):
         return PrescriptionTask(
             medications=params.get("medications", []),
@@ -125,7 +134,7 @@ class TaskFactory:
     def _build_treatment_execution(params, depends_on, summary):
         return TreatmentExecutionTask(
             treatment_type=params.get("treatment_type", ""),
-            protocol_ref=params.get("protocol_ref", ""),
+
             executor_role=params.get("executor_role", "主治医生"),
             preconditions=params.get("preconditions", []),
             monitoring_plan=params.get("monitoring_plan", ""),
@@ -287,7 +296,7 @@ class CommanderLLM:
         return result
 
     def _parse_branch_node(self, item: dict, depends_map: dict) -> BranchNode:
-        """解析单个分支节点"""
+        """解析单个分支节点（支持嵌套分支）"""
         condition = item.get("condition", "")
         branches = []
         for branch in item.get("branches", []):
@@ -295,9 +304,13 @@ class CommanderLLM:
             branch_tasks = []
             for task_item in branch.get("tasks", []):
                 try:
-                    task = TaskFactory.build(task_item, depends_map)
-                    depends_map[task_item["task_type"]] = task.task_id
-                    branch_tasks.append(task)
+                    if task_item.get("type") == "branch":
+                        nested = self._parse_branch_node(task_item, depends_map)
+                        branch_tasks.append(nested)
+                    else:
+                        task = TaskFactory.build(task_item, depends_map)
+                        depends_map[task_item["task_type"]] = task.task_id
+                        branch_tasks.append(task)
                 except Exception as e:
                     print(f"[Commander] 分支Task构建跳过: {e}")
             branches.append((cond_value, branch_tasks))
@@ -305,9 +318,13 @@ class CommanderLLM:
         else_tasks = []
         for task_item in item.get("else_tasks", []):
             try:
-                task = TaskFactory.build(task_item, depends_map)
-                depends_map[task_item["task_type"]] = task.task_id
-                else_tasks.append(task)
+                if task_item.get("type") == "branch":
+                    nested = self._parse_branch_node(task_item, depends_map)
+                    else_tasks.append(nested)
+                else:
+                    task = TaskFactory.build(task_item, depends_map)
+                    depends_map[task_item["task_type"]] = task.task_id
+                    else_tasks.append(task)
             except Exception as e:
                 print(f"[Commander] ELSE分支Task构建跳过: {e}")
 

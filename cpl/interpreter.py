@@ -6,6 +6,7 @@ CPL Interpreter：解析CPL脚本，提取有序的Agent调用序列
   1. 解析CPL脚本文本 → 结构化的 AgentCall 序列
   2. 保留STEP编号、依赖关系、参数等元信息
   3. 输出可直接交给 LLMPool executor 调度执行的调用计划
+  4. 解析IF/ELIF/ELSE条件分支 → 运行时由executor求值
 
 支持两种输入：
   - CPL脚本文本（字符串） → interpret()
@@ -29,6 +30,7 @@ from .models import CPLScript, CPLNode
 _AGENT_NAME_TO_TASK_TYPE: dict[str, TaskType] = {
     "patient_profile":      TaskType.PATIENT_PROFILE,
     "examination_order":    TaskType.EXAMINATION_ORDER,
+    "exam_execution":       TaskType.EXAM_EXECUTION,
     "prescription":         TaskType.PRESCRIPTION,
     "diagnostic":           TaskType.DIAGNOSTIC,
     "schedule":             TaskType.SCHEDULE,
@@ -44,7 +46,6 @@ _AGENT_NAME_TO_TASK_TYPE: dict[str, TaskType] = {
 class CallType(Enum):
     """调用类型"""
     AGENT    = "agent"       # agent.xxx() 调用 → 需要LLMPool调度
-    PROTOCOL = "protocol"    # protocol.xxx → 标准化操作（当前记录，不调LLM）
     RAG      = "rag"         # rag.archive() → 归档操作
     EXAM     = "exam"        # exam.xxx() → 检查操作
 
@@ -101,6 +102,25 @@ class AssertEntry:
 
 
 @dataclass
+class ConditionalBlock:
+    """
+    IF/ELIF/ELSE条件分支执行块
+
+    在ExecutionPlan.calls中与AgentCall并列，executor遇到时
+    根据当前变量空间求值condition，选择匹配的分支执行。
+
+    branches: [(condition_expr, [ExecutionItem, ...]), ...]
+      condition_expr: 如 'diagnostic.primary_diagnosis == "颅内疾病"'
+    else_items: ELSE分支的执行项列表
+    ExecutionItem = AgentCall | ConditionalBlock | LogEntry | NotifyEntry
+    """
+    step_number: int = 0
+    step_label: str = ""
+    branches: list = field(default_factory=list)
+    else_items: list = field(default_factory=list)
+
+
+@dataclass
 class ExecutionPlan:
     """
     CPL Interpreter的完整输出：一个可执行的计划
@@ -108,27 +128,29 @@ class ExecutionPlan:
     包含：
       - pathway_name: 路径名称
       - asserts: 前置断言列表
-      - calls: 有序的AgentCall列表（核心，交给executor执行）
-      - logs: LOG语句列表（executor执行时按顺序输出）
-      - notifications: NOTIFY语句列表
+      - calls: 有序的执行项列表（AgentCall | ConditionalBlock）
+      - logs: 顶层LOG语句列表
+      - notifications: 顶层NOTIFY语句列表
     """
     pathway_name: str = ""
     asserts: list[AssertEntry] = field(default_factory=list)
-    calls: list[AgentCall] = field(default_factory=list)
+    calls: list = field(default_factory=list)   # list[AgentCall | ConditionalBlock]
     logs: list[LogEntry] = field(default_factory=list)
     notifications: list[NotifyEntry] = field(default_factory=list)
 
     def agent_calls_only(self) -> list[AgentCall]:
-        """只返回需要LLMPool调度的agent类型调用"""
-        return [c for c in self.calls if c.call_type == CallType.AGENT and c.task_type is not None]
+        """递归收集所有AgentCall（含条件分支内的），用于统计"""
+        return _collect_agent_calls(self.calls)
 
     def summary(self) -> str:
         agent_count = len(self.agent_calls_only())
+        cond_count = _count_conditional_blocks(self.calls)
         return (
             f"[ExecutionPlan] pathway={self.pathway_name} | "
             f"asserts={len(self.asserts)} | "
             f"agent_calls={agent_count} | "
-            f"total_calls={len(self.calls)} | "
+            f"conditional_blocks={cond_count} | "
+            f"total_items={len(self.calls)} | "
             f"logs={len(self.logs)} | "
             f"notifications={len(self.notifications)}"
         )
@@ -172,6 +194,32 @@ class ExecutionPlan:
         print(f"[CPLInterpreter] CPL日志已导出: {filepath}")
 
 
+def _collect_agent_calls(items: list) -> list[AgentCall]:
+    """递归收集所有AgentCall"""
+    result = []
+    for item in items:
+        if isinstance(item, AgentCall):
+            if item.call_type == CallType.AGENT and item.task_type is not None:
+                result.append(item)
+        elif isinstance(item, ConditionalBlock):
+            for _, branch_items in item.branches:
+                result.extend(_collect_agent_calls(branch_items))
+            result.extend(_collect_agent_calls(item.else_items))
+    return result
+
+
+def _count_conditional_blocks(items: list) -> int:
+    """递归统计ConditionalBlock数量"""
+    count = 0
+    for item in items:
+        if isinstance(item, ConditionalBlock):
+            count += 1
+            for _, branch_items in item.branches:
+                count += _count_conditional_blocks(branch_items)
+            count += _count_conditional_blocks(item.else_items)
+    return count
+
+
 # ==================== 正则模式 ====================
 
 # PATHWAY "名称":
@@ -185,10 +233,10 @@ _RE_STEP = re.compile(r'STEP\s+(\d+)\s+"([^"]+)"')
 
 # var = EXECUTE agent.xxx(...)  或  EXECUTE agent.xxx(...)
 _RE_EXECUTE_ASSIGN = re.compile(
-    r'(\w+)\s*=\s*EXECUTE\s+(agent|protocol|rag|exam)\.(\w+)\s*\('
+    r'(\w+)\s*=\s*EXECUTE\s+(agent|rag|exam)\.(\w+)\s*\('
 )
 _RE_EXECUTE_BARE = re.compile(
-    r'EXECUTE\s+(agent|protocol|rag|exam)\.(\w+)\s*\(?'
+    r'EXECUTE\s+(agent|rag|exam)\.(\w+)\s*\(?'
 )
 
 # 多行EXECUTE闭合：检测右括号
@@ -205,6 +253,11 @@ _RE_AWAIT = re.compile(r'AWAIT\s+(\w+)')
 
 # 参数行：key=value 或 key="value" 或 key=[...]
 _RE_PARAM = re.compile(r'(\w+)\s*=\s*(.+)')
+
+# IF / ELIF / ELSE
+_RE_IF = re.compile(r'^IF\s+(.+):\s*$')
+_RE_ELIF = re.compile(r'^ELIF\s+(.+):\s*$')
+_RE_ELSE = re.compile(r'^ELSE\s*:\s*$')
 
 
 class CPLInterpreter:
@@ -266,9 +319,9 @@ class CPLInterpreter:
 
         current_step = 0
         current_step_label = ""
-        current_step_lines: list[str] = []
+        current_step_raw_lines: list[str] = []  # 保留原始缩进的行
+        step_base_indent: int = 0
         in_step = False
-        pending_await: str | None = None
 
         i = 0
         while i < len(lines):
@@ -301,36 +354,43 @@ class CPLInterpreter:
             m = _RE_STEP.search(stripped)
             if m:
                 # 先处理前一个STEP积累的行
-                if in_step and current_step_lines:
+                if in_step and current_step_raw_lines:
                     node = CPLNode(
                         step_number=current_step,
                         label=current_step_label,
                         task_id="",
                         task_type="",
-                        body_lines=current_step_lines,
+                        body_lines=current_step_raw_lines,
                     )
                     self._parse_node_lines(node, plan)
                 current_step = int(m.group(1))
                 current_step_label = m.group(2)
-                current_step_lines = []
+                current_step_raw_lines = []
+                # 计算STEP内容的基准缩进
+                step_line_indent = len(line) - len(line.lstrip())
+                step_base_indent = step_line_indent + 4
                 in_step = True
                 i += 1
                 continue
 
-            # STEP内的行
+            # STEP内的行 — 保留相对缩进
             if in_step:
-                current_step_lines.append(stripped)
+                if len(line) >= step_base_indent:
+                    relative_line = line[step_base_indent:]
+                else:
+                    relative_line = line.lstrip()
+                current_step_raw_lines.append(relative_line)
 
             i += 1
 
         # 处理最后一个STEP
-        if in_step and current_step_lines:
+        if in_step and current_step_raw_lines:
             node = CPLNode(
                 step_number=current_step,
                 label=current_step_label,
                 task_id="",
                 task_type="",
-                body_lines=current_step_lines,
+                body_lines=current_step_raw_lines,
             )
             self._parse_node_lines(node, plan)
 
@@ -341,89 +401,17 @@ class CPLInterpreter:
     # ==================== 节点行解析 ====================
 
     def _parse_node_lines(self, node: CPLNode, plan: ExecutionPlan):
-        """解析一个CPLNode的body_lines，提取AgentCall / LOG / NOTIFY"""
-        pending_await = False
-        i = 0
-        lines = node.body_lines
-
-        while i < len(lines):
-            line = lines[i].strip()
-
-            # AWAIT
-            m = _RE_AWAIT.match(line)
-            if m:
-                pending_await = True
-                i += 1
-                continue
-
-            # EXECUTE（带赋值）
-            m = _RE_EXECUTE_ASSIGN.match(line)
-            if m:
-                var_name = m.group(1)
-                call_domain = m.group(2)   # agent / protocol / rag / exam
-                func_name = m.group(3)
-                # 收集多行参数
-                params, consumed = self._collect_params(lines, i)
-                call = self._build_call(
-                    step_number=node.step_number,
-                    step_label=node.label,
-                    call_domain=call_domain,
-                    func_name=func_name,
-                    var_name=var_name,
-                    params=params,
-                    source_line=line,
-                    is_awaited=pending_await,
-                )
-                plan.calls.append(call)
-                pending_await = False
-                i += consumed
-                continue
-
-            # EXECUTE（无赋值）
-            m = _RE_EXECUTE_BARE.match(line)
-            if m:
-                call_domain = m.group(1)
-                func_name = m.group(2)
-                params, consumed = self._collect_params(lines, i)
-                call = self._build_call(
-                    step_number=node.step_number,
-                    step_label=node.label,
-                    call_domain=call_domain,
-                    func_name=func_name,
-                    var_name="",
-                    params=params,
-                    source_line=line,
-                    is_awaited=pending_await,
-                )
-                plan.calls.append(call)
-                pending_await = False
-                i += consumed
-                continue
-
-            # LOG
-            m = _RE_LOG.match(line)
-            if m:
-                plan.logs.append(LogEntry(
-                    step_number=node.step_number,
-                    message=m.group(1),
-                    level=m.group(2) or "INFO",
-                ))
-                i += 1
-                continue
-
-            # NOTIFY
-            m = _RE_NOTIFY.match(line)
-            if m:
-                plan.notifications.append(NotifyEntry(
-                    step_number=node.step_number,
-                    target=m.group(1),
-                    message=m.group(2),
-                ))
-                i += 1
-                continue
-
-            # 其他行（IF/ELIF/ELSE/ASSERT内嵌）跳过
-            i += 1
+        """解析一个CPLNode的body_lines，提取执行项并加入plan"""
+        items = self._parse_items_from_lines(
+            node.body_lines, node.step_number, node.label
+        )
+        for item in items:
+            if isinstance(item, (AgentCall, ConditionalBlock)):
+                plan.calls.append(item)
+            elif isinstance(item, LogEntry):
+                plan.logs.append(item)
+            elif isinstance(item, NotifyEntry):
+                plan.notifications.append(item)
 
     def _parse_loose_lines(self, lines: list[str], step_number: int, plan: ExecutionPlan):
         """解析非STEP内的散行（收尾区域）"""
@@ -436,6 +424,226 @@ class CPLInterpreter:
         )
         self._parse_node_lines(node, plan)
 
+    # ==================== 核心：递归解析行列表为执行项 ====================
+
+    def _parse_items_from_lines(
+        self, lines: list[str], step_number: int, step_label: str
+    ) -> list:
+        """
+        将CPL代码行列表解析为执行项列表。
+        支持IF/ELIF/ELSE条件分支（含嵌套）。
+
+        返回: list[AgentCall | ConditionalBlock | LogEntry | NotifyEntry]
+        """
+        items = []
+        pending_await = False
+        i = 0
+
+        while i < len(lines):
+            raw_line = lines[i]
+            stripped = raw_line.strip()
+
+            if not stripped or stripped.startswith("#"):
+                i += 1
+                continue
+
+            # ---- IF 条件分支开始 ----
+            m = _RE_IF.match(stripped)
+            if m:
+                block, consumed = self._parse_conditional_block(
+                    lines, i, step_number, step_label
+                )
+                items.append(block)
+                i += consumed
+                continue
+
+            # ---- AWAIT ----
+            m = _RE_AWAIT.match(stripped)
+            if m:
+                pending_await = True
+                i += 1
+                continue
+
+            # ---- EXECUTE（带赋值） ----
+            m = _RE_EXECUTE_ASSIGN.match(stripped)
+            if m:
+                var_name = m.group(1)
+                call_domain = m.group(2)
+                func_name = m.group(3)
+                params, consumed = self._collect_params(lines, i)
+                call = self._build_call(
+                    step_number=step_number,
+                    step_label=step_label,
+                    call_domain=call_domain,
+                    func_name=func_name,
+                    var_name=var_name,
+                    params=params,
+                    source_line=stripped,
+                    is_awaited=pending_await,
+                )
+                items.append(call)
+                pending_await = False
+                i += consumed
+                continue
+
+            # ---- EXECUTE（无赋值） ----
+            m = _RE_EXECUTE_BARE.match(stripped)
+            if m:
+                call_domain = m.group(1)
+                func_name = m.group(2)
+                params, consumed = self._collect_params(lines, i)
+                call = self._build_call(
+                    step_number=step_number,
+                    step_label=step_label,
+                    call_domain=call_domain,
+                    func_name=func_name,
+                    var_name="",
+                    params=params,
+                    source_line=stripped,
+                    is_awaited=pending_await,
+                )
+                items.append(call)
+                pending_await = False
+                i += consumed
+                continue
+
+            # ---- LOG ----
+            m = _RE_LOG.match(stripped)
+            if m:
+                items.append(LogEntry(
+                    step_number=step_number,
+                    message=m.group(1),
+                    level=m.group(2) or "INFO",
+                ))
+                i += 1
+                continue
+
+            # ---- NOTIFY ----
+            m = _RE_NOTIFY.match(stripped)
+            if m:
+                items.append(NotifyEntry(
+                    step_number=step_number,
+                    target=m.group(1),
+                    message=m.group(2),
+                ))
+                i += 1
+                continue
+
+            # 其他行跳过
+            i += 1
+
+        return items
+
+    # ==================== IF/ELIF/ELSE 块解析 ====================
+
+    def _parse_conditional_block(
+        self, lines: list[str], start: int,
+        step_number: int, step_label: str
+    ) -> tuple:
+        """
+        从lines[start]开始解析一个完整的IF/ELIF/ELSE块。
+        Returns: (ConditionalBlock, consumed_line_count)
+        """
+        base_indent = self._get_indent(lines[start])
+        branches = []
+        else_items = []
+        i = start
+
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            if not stripped:
+                i += 1
+                continue
+
+            current_indent = self._get_indent(line)
+
+            # 缩进小于基准 → 块结束
+            if current_indent < base_indent:
+                break
+            # 缩进大于基准 → 属于分支体已被下面收集，不应出现
+            if current_indent > base_indent:
+                i += 1
+                continue
+
+            # 同级别缩进的行
+            m_if = _RE_IF.match(stripped)
+            m_elif = _RE_ELIF.match(stripped)
+            m_else = _RE_ELSE.match(stripped)
+
+            if m_if or m_elif:
+                condition = (m_if or m_elif).group(1)
+                body_lines, body_consumed = self._collect_indented_body(
+                    lines, i + 1, base_indent
+                )
+                branch_items = self._parse_items_from_lines(
+                    body_lines, step_number, step_label
+                )
+                branches.append((condition, branch_items))
+                i += 1 + body_consumed
+            elif m_else:
+                body_lines, body_consumed = self._collect_indented_body(
+                    lines, i + 1, base_indent
+                )
+                else_items = self._parse_items_from_lines(
+                    body_lines, step_number, step_label
+                )
+                i += 1 + body_consumed
+            else:
+                # 同级别但非ELIF/ELSE → 块结束
+                break
+
+        consumed = i - start
+        block = ConditionalBlock(
+            step_number=step_number,
+            step_label=step_label,
+            branches=branches,
+            else_items=else_items,
+        )
+        return block, consumed
+
+    def _collect_indented_body(
+        self, lines: list[str], start: int, parent_indent: int
+    ) -> tuple:
+        """
+        从start开始，收集缩进严格大于parent_indent的连续行。
+        返回 (body_lines_with_reduced_indent, consumed_count)
+        """
+        body_lines = []
+        consumed = 0
+        child_indent = parent_indent + 4
+
+        i = start
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.strip()
+
+            if not stripped:
+                body_lines.append("")
+                consumed += 1
+                i += 1
+                continue
+
+            current_indent = self._get_indent(line)
+            if current_indent <= parent_indent:
+                break
+
+            # 去除一层缩进
+            if len(line) >= child_indent:
+                body_lines.append(line[child_indent:])
+            else:
+                body_lines.append(line.lstrip())
+            consumed += 1
+            i += 1
+
+        return body_lines, consumed
+
+    @staticmethod
+    def _get_indent(line: str) -> int:
+        """获取一行的前导空格数"""
+        return len(line) - len(line.lstrip())
+
     # ==================== 参数收集 ====================
 
     def _collect_params(self, lines: list[str], start: int) -> tuple[dict, int]:
@@ -444,10 +652,8 @@ class CPLInterpreter:
         返回 (params_dict, consumed_line_count)
         """
         params = {}
-        # 检查是否第一行就闭合了（单行调用）
         first_line = lines[start].strip()
         if first_line.endswith(")") and "(" in first_line:
-            # 单行调用，从括号内提取参数
             paren_content = first_line[first_line.index("(") + 1 : first_line.rindex(")")]
             params = self._parse_params_str(paren_content)
             return params, 1
@@ -459,7 +665,6 @@ class CPLInterpreter:
             consumed += 1
             if _RE_PAREN_CLOSE.match(line) or line == ")":
                 break
-            # 参数行
             m = _RE_PARAM.match(line.rstrip(","))
             if m:
                 key = m.group(1)
@@ -470,7 +675,6 @@ class CPLInterpreter:
     def _parse_params_str(self, s: str) -> dict:
         """解析单行参数字符串如 'input=dialogue, rag_context=AUTO'"""
         params = {}
-        # 简单按逗号分割（不处理嵌套逗号的情况，CPL参数一般简单）
         for part in re.split(r',\s*(?=\w+=)', s):
             part = part.strip()
             if not part:
@@ -484,29 +688,24 @@ class CPLInterpreter:
     def _parse_value(val: str):
         """解析参数值：JSON列表/字典、字符串、布尔值、数字、标识符"""
         val = val.strip().rstrip(",")
-        # JSON列表或字典
         if (val.startswith("[") and val.endswith("]")) or \
            (val.startswith("{") and val.endswith("}")):
             try:
                 return json.loads(val)
             except json.JSONDecodeError:
                 return val
-        # 字符串
         if val.startswith('"') and val.endswith('"'):
             return val[1:-1]
-        # 布尔值
         if val == "True":
             return True
         if val == "False":
             return False
-        # 数字
         try:
             if "." in val:
                 return float(val)
             return int(val)
         except ValueError:
             pass
-        # 标识符（如AUTO, NONE, 变量名）
         return val
 
     # ==================== 构建AgentCall ====================
@@ -517,16 +716,13 @@ class CPLInterpreter:
         params: dict, source_line: str, is_awaited: bool
     ) -> AgentCall:
         """构建一个AgentCall对象"""
-        # 确定调用类型
         call_type_map = {
             "agent": CallType.AGENT,
-            "protocol": CallType.PROTOCOL,
             "rag": CallType.RAG,
             "exam": CallType.EXAM,
         }
         call_type = call_type_map.get(call_domain, CallType.AGENT)
 
-        # 映射TaskType
         task_type = None
         if call_type == CallType.AGENT:
             task_type = _AGENT_NAME_TO_TASK_TYPE.get(func_name)
