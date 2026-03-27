@@ -1,4 +1,4 @@
-[English](./README.md) | [中文](./README-zh.md)
+[English](https://github.com/Kemmywan/CPL-Clinic/blob/master/docs/readme.md) | [中文](https://github.com/Kemmywan/CPL-Clinic/blob/master/docs/readme-zh.md)
 
 # AutoCPL
 
