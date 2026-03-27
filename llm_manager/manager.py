@@ -16,7 +16,7 @@ load_dotenv()
 
 class LLMManager:
     """
-    AutoCLP统一LLM管理器
+    CPL-Clinic统一LLM管理器
 
     职责：
     1. 维护Commander LLM（强力模型，负责意图识别和任务分解）

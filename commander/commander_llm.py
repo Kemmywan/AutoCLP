@@ -200,7 +200,7 @@ class TaskFactory:
 
 class CommanderLLM:
     """
-    Commander LLM：AutoCLP的大脑与调度器
+    Commander LLM：CPL-Clinic的大脑与调度器
 
     职责：
       1. 接收 RawClinicalData

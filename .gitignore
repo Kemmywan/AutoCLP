@@ -3,7 +3,7 @@
 /data/
 /raw/
 **/__pycache__/
-/AutoCLP.egg-info/
+/CPL-Clinic.egg-info/
 /exp_result/
 /test_data/
 /.vscode/

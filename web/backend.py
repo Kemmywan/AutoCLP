@@ -1,6 +1,6 @@
 # web/backend.py
 """
-AutoCPL Web Backend - FastAPI
+CPL-Clinic Web Backend - FastAPI
 提供分步执行的REST API，支持SSE流式输出
 """
 
@@ -29,7 +29,7 @@ from commander.task_schema import BaseTask, TaskType, TaskStatus
 from cpl import CPLGenerator, CPLInterpreter
 from llm_manager import LLMManager
 
-app = FastAPI(title="AutoCPL", version="1.0")
+app = FastAPI(title="CPL-Clinic", version="1.0")
 
 app.add_middleware(
     CORSMiddleware,
