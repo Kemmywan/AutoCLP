@@ -1,4 +1,6 @@
-# AutoCPL
+[English](./README.md) | [中文](./README-zh.md)
+
+# CPL-Clinic
 
 > Intelligent Clinical Pathway Decision Support System — combining Large Language Models (LLMs), task decomposition, and a Clinical Pathway Language (CPL) to automate medical diagnosis and treatment workflows.
 
@@ -42,7 +44,7 @@ Raw Dialogue Input (text / Web UI / file)
 ## Project Structure
 
 ```
-AutoCPL/
+CPL-Clinic/
 ├── ambient/              # Multimodal input layer (file / API / audio)
 │   ├── models.py         # Data models: RawClinicalData
 │   ├── text_input.py     # Text input adapter

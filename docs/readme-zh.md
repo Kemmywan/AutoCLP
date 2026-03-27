@@ -1,3 +1,5 @@
+[English](./README.md) | [中文](./README-zh.md)
+
 # AutoCPL
 
 > 智能临床路径决策支持系统 —— 结合大语言模型（LLM）、任务分解与临床路径语言（CPL），自动化医疗诊疗流程。
